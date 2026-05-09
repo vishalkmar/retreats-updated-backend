@@ -12,7 +12,6 @@ const SiteSetting = sequelize.define(
     key: {
       type: DataTypes.STRING(80),
       allowNull: false,
-      unique: true,
     },
     value: {
       type: DataTypes.JSON,
@@ -21,6 +20,9 @@ const SiteSetting = sequelize.define(
   },
   {
     tableName: 'site_settings',
+    indexes: [
+      { name: 'site_settings_key_unique', unique: true, fields: ['key'] },
+    ],
   }
 );
 

@@ -8,8 +8,8 @@ const Package = sequelize.define(
 
     // Basic
     name: { type: DataTypes.STRING(220), allowNull: false },
-    slug: { type: DataTypes.STRING(240), allowNull: false, unique: true },
-    shortDescription: { type: DataTypes.STRING(500), allowNull: true },
+    slug: { type: DataTypes.STRING(240), allowNull: false },
+    shortDescription: { type: DataTypes.TEXT('long'), allowNull: true },
     description: { type: DataTypes.TEXT('long'), allowNull: true },
 
     // Media
@@ -64,13 +64,40 @@ const Package = sequelize.define(
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
 
-    // Single rich-text block that replaces include/exclude/highlights inputs.
-    // Stores HTML produced by the admin rich-text editor.
+    // Single rich-text block that previously combined highlights/inclusions/
+    // exclusions. Kept for backward compatibility but no longer surfaced in
+    // the admin form — replaced by three separate rich-text fields below.
     richContent: {
       type: DataTypes.TEXT('long'),
       allowNull: true,
-      comment: 'HTML content covering highlights / what is and is not included',
+      comment: 'Legacy combined HTML for highlights/included/excluded',
     },
+
+    // Three independent rich-text blocks for the public detail page.
+    highlightsRich: {
+      type: DataTypes.TEXT('long'),
+      allowNull: true,
+      comment: 'HTML — Highlights of the retreat',
+    },
+    inclusionsRich: {
+      type: DataTypes.TEXT('long'),
+      allowNull: true,
+      comment: 'HTML — What is included',
+    },
+    exclusionsRich: {
+      type: DataTypes.TEXT('long'),
+      allowNull: true,
+      comment: 'HTML — What is not included',
+    },
+
+    // Additional rich-text policy / experience blocks
+    termsConditions: { type: DataTypes.TEXT('long'), allowNull: true },
+    refundsPolicy: { type: DataTypes.TEXT('long'), allowNull: true },
+    cancellationPolicy: { type: DataTypes.TEXT('long'), allowNull: true },
+    bookingTerms: { type: DataTypes.TEXT('long'), allowNull: true },
+    retreatExperience: { type: DataTypes.TEXT('long'), allowNull: true },
+    whatMakesSpecial: { type: DataTypes.TEXT('long'), allowNull: true },
+    fullProgramTiming: { type: DataTypes.TEXT('long'), allowNull: true },
 
     // Food (rich text HTML) + structured meals / diets pickers
     food: {
@@ -145,7 +172,7 @@ const Package = sequelize.define(
   {
     tableName: 'packages',
     indexes: [
-      { fields: ['slug'] },
+      { name: 'packages_slug_unique', unique: true, fields: ['slug'] },
       { fields: ['cityId'] },
       { fields: ['isActive'] },
       { fields: ['isFeatured'] },

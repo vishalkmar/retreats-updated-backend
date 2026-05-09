@@ -7,7 +7,7 @@ const Blog = sequelize.define(
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
 
     title: { type: DataTypes.STRING(255), allowNull: false },
-    slug: { type: DataTypes.STRING(280), allowNull: false, unique: true },
+    slug: { type: DataTypes.STRING(280), allowNull: false },
 
     excerpt: { type: DataTypes.STRING(500), allowNull: true },
     content: { type: DataTypes.TEXT('long'), allowNull: true },
@@ -41,7 +41,7 @@ const Blog = sequelize.define(
   {
     tableName: 'blogs',
     indexes: [
-      { fields: ['slug'] },
+      { name: 'blogs_slug_unique', unique: true, fields: ['slug'] },
       { fields: ['isPublished'] },
       { fields: ['isFeatured'] },
       { fields: ['blogCategoryId'] },

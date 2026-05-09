@@ -295,6 +295,46 @@ const updateBlog = asyncHandler(async (req, res) => {
   return ok(res, { blog: fresh }, 'Blog updated');
 });
 
+// POST /api/blogs/:id/duplicate  (admin)
+const duplicateBlog = asyncHandler(async (req, res) => {
+  const original = await Blog.findByPk(req.params.id, {
+    include: [{ model: BlogScene, as: 'scenes' }],
+    order: [[{ model: BlogScene, as: 'scenes' }, 'sortOrder', 'ASC']],
+  });
+  if (!original) return fail(res, 'Blog not found', 404);
+
+  const data = original.toJSON();
+  const slug = await ensureUniqueSlug(`${data.slug}-copy`);
+
+  ['id', 'slug', 'createdAt', 'updatedAt', 'viewCount', 'publishedAt', 'scenes'].forEach((k) => delete data[k]);
+
+  const copy = await Blog.create({
+    ...data,
+    title: `${original.title} (Copy)`,
+    slug,
+    isPublished: false,
+    isFeatured: false,
+    publishedAt: null,
+  });
+
+  // Duplicate scenes pointing at the same uploaded image URLs
+  if (original.scenes?.length) {
+    await BlogScene.bulkCreate(
+      original.scenes.map((s, i) => ({
+        blogId: copy.id,
+        title: s.title,
+        subtitle: s.subtitle,
+        content: s.content,
+        imageUrl: s.imageUrl,
+        imagePosition: s.imagePosition,
+        sortOrder: i,
+      }))
+    );
+  }
+
+  return created(res, { blog: copy }, 'Blog duplicated');
+});
+
 // PATCH /api/blogs/:id/toggle  (toggle isPublished)
 const toggle = asyncHandler(async (req, res) => {
   const blog = await Blog.findByPk(req.params.id);
@@ -319,6 +359,7 @@ module.exports = {
   listPublic, getBySlug,
   listAdmin, getAdminOne,
   createBlog, updateBlog,
+  duplicateBlog,
   toggle, removeBlog,
   listScenes, createScene, updateScene, removeScene, reorderScenes,
 };

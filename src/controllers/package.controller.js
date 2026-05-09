@@ -210,6 +210,16 @@ const createPackage = asyncHandler(async (req, res) => {
         isFeatured: body.isFeatured === 'true',
         isActive: body.isActive === 'false' ? false : true,
         richContent: body.richContent || null,
+        highlightsRich: body.highlightsRich || null,
+        inclusionsRich: body.inclusionsRich || null,
+        exclusionsRich: body.exclusionsRich || null,
+        termsConditions: body.termsConditions || null,
+        refundsPolicy: body.refundsPolicy || null,
+        cancellationPolicy: body.cancellationPolicy || null,
+        bookingTerms: body.bookingTerms || null,
+        retreatExperience: body.retreatExperience || null,
+        whatMakesSpecial: body.whatMakesSpecial || null,
+        fullProgramTiming: body.fullProgramTiming || null,
         food: body.food || null,
         benefits: body.benefits || null,
         meals: parseJsonField(body.meals, []),
@@ -281,7 +291,10 @@ const updatePackage = asyncHandler(async (req, res) => {
     'shortDescription', 'description', 'videoUrl', 'locationDetail', 'timing',
     'startDate', 'endDate', 'currency', 'hostName', 'hostBio',
     'metaTitle', 'metaDescription',
-    'richContent', 'food', 'benefits',
+    'richContent', 'highlightsRich', 'inclusionsRich', 'exclusionsRich',
+    'termsConditions', 'refundsPolicy', 'cancellationPolicy', 'bookingTerms',
+    'retreatExperience', 'whatMakesSpecial', 'fullProgramTiming',
+    'food', 'benefits',
   ];
   directFields.forEach((f) => {
     if (body[f] !== undefined) pkg[f] = body[f] === '' ? null : body[f];
@@ -338,6 +351,65 @@ const updatePackage = asyncHandler(async (req, res) => {
 
   const fresh = await Package.findByPk(pkg.id, { include: baseInclude(false) });
   return ok(res, { package: fresh }, 'Package updated');
+});
+
+// POST /api/packages/:id/duplicate  (admin)
+const duplicatePackage = asyncHandler(async (req, res) => {
+  const original = await Package.findByPk(req.params.id, { include: baseInclude(false) });
+  if (!original) return fail(res, 'Package not found', 404);
+
+  const t = await sequelize.transaction();
+  try {
+    const data = original.toJSON();
+    const slug = await ensureUniqueSlug(`${data.slug}-copy`);
+
+    // strip fields that should not be copied
+    [
+      'id', 'slug', 'createdAt', 'updatedAt', 'rating', 'reviewCount',
+      'interestedCount', 'city', 'categories', 'problems', 'activities',
+      'gallery', 'reviews',
+    ].forEach((k) => delete data[k]);
+
+    const copy = await Package.create(
+      {
+        ...data,
+        name: `${original.name} (Copy)`,
+        slug,
+        isActive: false, // start as draft
+        isFeatured: false,
+      },
+      { transaction: t }
+    );
+
+    // M2M
+    const categoryIds = (original.categories || []).map((c) => c.id);
+    const problemIds = (original.problems || []).map((p) => p.id);
+    const activityIds = (original.activities || []).map((a) => a.id);
+    if (categoryIds.length) await copy.setCategories(categoryIds, { transaction: t });
+    if (problemIds.length) await copy.setProblems(problemIds, { transaction: t });
+    if (activityIds.length) await copy.setActivities(activityIds, { transaction: t });
+
+    // Gallery — duplicate rows pointing at the same uploaded URLs (we don't
+    // re-upload the binary; both packages share the cloud asset until edited).
+    if (original.gallery?.length) {
+      await PackageImage.bulkCreate(
+        original.gallery.map((g, i) => ({
+          packageId: copy.id,
+          url: g.url,
+          alt: g.alt,
+          sortOrder: i,
+        })),
+        { transaction: t }
+      );
+    }
+
+    await t.commit();
+    const fresh = await Package.findByPk(copy.id, { include: baseInclude(false) });
+    return created(res, { package: fresh }, 'Package duplicated');
+  } catch (err) {
+    await t.rollback();
+    throw err;
+  }
 });
 
 // PATCH /api/packages/:id/toggle
@@ -509,6 +581,7 @@ module.exports = {
   getAdminOne,
   createPackage,
   updatePackage,
+  duplicatePackage,
   toggle,
   removePackage,
   removeGalleryImage,

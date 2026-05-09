@@ -6,7 +6,7 @@ const Category = sequelize.define(
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     name: { type: DataTypes.STRING(120), allowNull: false },
-    slug: { type: DataTypes.STRING(140), allowNull: false, unique: true },
+    slug: { type: DataTypes.STRING(140), allowNull: false },
     imageUrl: { type: DataTypes.STRING(500), allowNull: true },
     description: { type: DataTypes.TEXT, allowNull: true },
     sortOrder: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -14,7 +14,10 @@ const Category = sequelize.define(
   },
   {
     tableName: 'categories',
-    indexes: [{ fields: ['slug'] }, { fields: ['isActive'] }],
+    indexes: [
+      { name: 'categories_slug_unique', unique: true, fields: ['slug'] },
+      { fields: ['isActive'] },
+    ],
   }
 );
 

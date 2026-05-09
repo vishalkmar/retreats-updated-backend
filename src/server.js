@@ -87,11 +87,14 @@ const start = async () => {
 
   const skipSync = process.env.SKIP_SYNC === 'true';
   if (!skipSync) {
-    // Always prune duplicate indexes BEFORE syncing — keeps the table-key
-    // count under MySQL's 64-key cap regardless of how many times the dev
-    // server has been restarted.
+    // Prune duplicate indexes before syncing — this is one-time cleanup of
+    // any leftover `slug`, `slug_2`, … unique indexes from older schema
+    // definitions. With the named-index model definitions now in place,
+    // subsequent runs find nothing to drop and stay silent.
     const dropped = await pruneDuplicateIndexes();
-    if (dropped > 0) console.log(`[DB] Pruned ${dropped} duplicate indexes`);
+    if (dropped > 0) {
+      console.log(`[DB] Cleaned up ${dropped} stale duplicate index${dropped > 1 ? 'es' : ''}`);
+    }
 
     const syncOpts = process.env.NODE_ENV === 'production' ? {} : { alter: true };
     await syncWithRetry(syncOpts);

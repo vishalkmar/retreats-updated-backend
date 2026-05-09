@@ -6,7 +6,7 @@ const City = sequelize.define(
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     name: { type: DataTypes.STRING(120), allowNull: false },
-    slug: { type: DataTypes.STRING(140), allowNull: false, unique: true },
+    slug: { type: DataTypes.STRING(140), allowNull: false },
     country: { type: DataTypes.STRING(120), allowNull: true },
     imageUrl: { type: DataTypes.STRING(500), allowNull: true },
     description: { type: DataTypes.TEXT, allowNull: true },
@@ -15,7 +15,10 @@ const City = sequelize.define(
   },
   {
     tableName: 'cities',
-    indexes: [{ fields: ['slug'] }, { fields: ['isActive'] }],
+    indexes: [
+      { name: 'cities_slug_unique', unique: true, fields: ['slug'] },
+      { fields: ['isActive'] },
+    ],
   }
 );
 

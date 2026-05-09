@@ -17,7 +17,6 @@ const Admin = sequelize.define(
     email: {
       type: DataTypes.STRING(160),
       allowNull: false,
-      unique: true,
       validate: { isEmail: true },
     },
     password: {
@@ -39,6 +38,9 @@ const Admin = sequelize.define(
   },
   {
     tableName: 'admins',
+    indexes: [
+      { name: 'admins_email_unique', unique: true, fields: ['email'] },
+    ],
     hooks: {
       beforeCreate: async (admin) => {
         if (admin.password) {

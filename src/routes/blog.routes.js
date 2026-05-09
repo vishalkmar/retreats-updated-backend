@@ -18,6 +18,7 @@ router.get('/admin/all', authenticate, ctrl.listAdmin);
 router.get('/admin/:id', authenticate, ctrl.getAdminOne);
 router.post('/', authenticate, blogUpload, ctrl.createBlog);
 router.put('/:id', authenticate, blogUpload, ctrl.updateBlog);
+router.post('/:id/duplicate', authenticate, ctrl.duplicateBlog);
 router.patch('/:id/toggle', authenticate, ctrl.toggle);
 router.delete('/:id', authenticate, ctrl.removeBlog);
 

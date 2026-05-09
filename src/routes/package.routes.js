@@ -23,6 +23,7 @@ router.get('/admin/reviews', authenticate, ctrl.listReviewsAdmin);
 router.get('/admin/:id', authenticate, ctrl.getAdminOne);
 router.post('/', authenticate, packageUpload, ctrl.createPackage);
 router.put('/:id', authenticate, packageUpload, ctrl.updatePackage);
+router.post('/:id/duplicate', authenticate, ctrl.duplicatePackage);
 router.patch('/:id/toggle', authenticate, ctrl.toggle);
 router.delete('/:id/gallery/:imageId', authenticate, ctrl.removeGalleryImage);
 router.delete('/:id', authenticate, ctrl.removePackage);

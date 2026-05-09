@@ -12,6 +12,7 @@ router.use('/packages', require('./package.routes'));
 router.use('/testimonials', require('./testimonial.routes'));
 router.use('/blog-categories', require('./blogCategory.routes'));
 router.use('/blogs', require('./blog.routes'));
+router.use('/uploads', require('./upload.routes'));
 
 router.get('/health', (req, res) =>
   res.json({ success: true, message: 'API is healthy', timestamp: new Date().toISOString() })

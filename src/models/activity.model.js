@@ -6,7 +6,7 @@ const Activity = sequelize.define(
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     name: { type: DataTypes.STRING(120), allowNull: false },
-    slug: { type: DataTypes.STRING(140), allowNull: false, unique: true },
+    slug: { type: DataTypes.STRING(140), allowNull: false },
     imageUrl: { type: DataTypes.STRING(500), allowNull: true },
     icon: { type: DataTypes.STRING(80), allowNull: true },
     description: { type: DataTypes.TEXT, allowNull: true },
@@ -15,7 +15,10 @@ const Activity = sequelize.define(
   },
   {
     tableName: 'activities',
-    indexes: [{ fields: ['slug'] }, { fields: ['isActive'] }],
+    indexes: [
+      { name: 'activities_slug_unique', unique: true, fields: ['slug'] },
+      { fields: ['isActive'] },
+    ],
   }
 );
 
