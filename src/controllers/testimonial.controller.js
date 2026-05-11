@@ -78,6 +78,11 @@ const createTestimonial = asyncHandler(async (req, res) => {
         videoPoster: posterFile ? buildUrl(posterFile) : null,
         sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
         isActive: body.isActive === 'false' ? false : true,
+        cardWidth: body.cardWidth ? parseInt(body.cardWidth, 10) : null,
+        cardHeight: body.cardHeight ? parseInt(body.cardHeight, 10) : null,
+        displayMode: Testimonial.DISPLAY_MODES.includes(body.displayMode)
+          ? body.displayMode
+          : 'carousel',
       },
       { transaction: tx }
     );
@@ -125,6 +130,12 @@ const updateTestimonial = asyncHandler(async (req, res) => {
   if (body.sortOrder !== undefined && body.sortOrder !== '')
     t.sortOrder = parseInt(body.sortOrder, 10);
   if (body.isActive !== undefined) t.isActive = body.isActive === 'true' || body.isActive === true;
+  if (body.cardWidth !== undefined)
+    t.cardWidth = body.cardWidth === '' ? null : parseInt(body.cardWidth, 10);
+  if (body.cardHeight !== undefined)
+    t.cardHeight = body.cardHeight === '' ? null : parseInt(body.cardHeight, 10);
+  if (body.displayMode !== undefined && Testimonial.DISPLAY_MODES.includes(body.displayMode))
+    t.displayMode = body.displayMode;
 
   const avatarFile = req.files?.avatar?.[0];
   const posterFile = req.files?.videoPoster?.[0];

@@ -2,13 +2,19 @@ const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 
 /*
-  Testimonial types:
-   - text     : just author quote with optional avatar (stars + content)
-   - image    : 1 hero image + author quote (used in image-style cards)
-   - gallery  : multiple images (carousel-only, no quote needed)
-   - video    : 1 video (with optional poster + author quote)
+  Testimonial types — what content the card carries:
+   - text       : author quote (stars + content + avatar)
+   - image      : a single hero image + optional quote
+   - gallery    : multiple images
+   - video      : a single video (URL or uploaded) + optional poster
+   - image_text : image + quote/text together (split card)
+   - video_text : video + quote/text together (split card)
+   - image_video: mixed media — both shown
 */
-const TYPES = ['text', 'image', 'gallery', 'video'];
+const TYPES = ['text', 'image', 'gallery', 'video', 'image_text', 'video_text', 'image_video'];
+
+// How a single testimonial card is displayed when rendered in a section
+const DISPLAY_MODES = ['carousel', 'grid'];
 
 const Testimonial = sequelize.define(
   'Testimonial',
@@ -33,12 +39,28 @@ const Testimonial = sequelize.define(
     // Display
     sortOrder: { type: DataTypes.INTEGER, defaultValue: 0 },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
+
+    // Per-card layout config — admin can pin a custom width/height in pixels.
+    // Leaving null lets the section use its responsive defaults.
+    cardWidth: { type: DataTypes.INTEGER, allowNull: true, comment: 'Custom width px' },
+    cardHeight: { type: DataTypes.INTEGER, allowNull: true, comment: 'Custom height px' },
+
+    // Section-level display mode this testimonial wants when rendered
+    displayMode: {
+      type: DataTypes.ENUM(...DISPLAY_MODES),
+      defaultValue: 'carousel',
+    },
   },
   {
     tableName: 'testimonials',
-    indexes: [{ fields: ['type'] }, { fields: ['isActive'] }],
+    indexes: [
+      { fields: ['type'] },
+      { fields: ['isActive'] },
+      { fields: ['displayMode'] },
+    ],
   }
 );
 
 Testimonial.TYPES = TYPES;
+Testimonial.DISPLAY_MODES = DISPLAY_MODES;
 module.exports = Testimonial;

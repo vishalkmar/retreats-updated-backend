@@ -508,6 +508,23 @@ const recomputePackageStats = async (packageId) => {
   );
 };
 
+// GET /api/packages/reviews/public — public list of approved reviews across
+// every package (for the homepage "What our clients say" arc carousel).
+const listApprovedReviewsPublic = asyncHandler(async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 24, 48);
+  const items = await PackageReview.findAll({
+    where: { isApproved: true },
+    include: [{
+      model: Package,
+      as: 'package',
+      attributes: ['id', 'name', 'slug', 'primaryImage'],
+    }],
+    order: [['createdAt', 'DESC']],
+    limit,
+  });
+  return ok(res, { items });
+});
+
 // PATCH /api/packages/reviews/:reviewId/approve  (admin)
 const approveReview = asyncHandler(async (req, res) => {
   const review = await PackageReview.findByPk(req.params.reviewId);
@@ -589,6 +606,7 @@ module.exports = {
   submitReview,
   approveReview,
   listReviewsAdmin,
+  listApprovedReviewsPublic,
   removeReview,
   reorderPackages,
 };

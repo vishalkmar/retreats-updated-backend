@@ -13,6 +13,7 @@ const packageUpload = upload.fields([
 
 // Public
 router.get('/', ctrl.listPublic);
+router.get('/reviews/public', ctrl.listApprovedReviewsPublic);
 router.post('/:id/interested', ctrl.markInterested);
 router.post('/:id/reviews', ctrl.submitReview);
 
