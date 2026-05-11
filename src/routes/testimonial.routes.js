@@ -13,6 +13,7 @@ const testimonialUpload = upload.fields([
 
 // Public
 router.get('/', ctrl.listPublic);
+router.get('/placements', ctrl.listPlacements);
 
 // Admin
 router.get('/all', authenticate, ctrl.listAll);

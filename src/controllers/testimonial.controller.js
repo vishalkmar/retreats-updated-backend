@@ -3,13 +3,25 @@ const { Testimonial, TestimonialMedia, sequelize } = require('../models');
 const { ok, created, fail } = require('../utils/response');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
+// Coerce FormData strings back into a JSON array (placements multi-select).
+const parsePlacements = (raw) => {
+  if (raw === undefined || raw === null || raw === '') return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+  }
+};
+
 const removeFileIfLocal = (url) => removeUploadedFile(url);
 const buildUrl = (file) => getUploadedUrl(file);
 
 const isVideo = (mime, name) =>
   mime?.startsWith('video/') || /\.(mp4|webm|mov|avi)$/i.test(name || '');
 
-// GET /api/testimonials  (public — by type, only active)
+// GET /api/testimonials  (public — by type/placement, only active)
 const listPublic = asyncHandler(async (req, res) => {
   const where = { isActive: true };
   if (req.query.type) where.type = req.query.type;
@@ -23,7 +35,32 @@ const listPublic = asyncHandler(async (req, res) => {
       [{ model: TestimonialMedia, as: 'media' }, 'sortOrder', 'ASC'],
     ],
   });
+
+  // Optional in-app placement filter. We do this in JS (not SQL) because the
+  // value is stored as a JSON array and we want to keep cross-DB compatibility.
+  if (req.query.placement) {
+    const wanted = req.query.placement;
+    const filtered = items.filter((t) => {
+      const placements = Array.isArray(t.placements) ? t.placements : [];
+      if (placements.includes(wanted)) return true;
+      // Backwards-compat default: an empty placements array falls back to
+      // "home_clients_say" for non-video types, and "home_video_band" for
+      // video types — preserves existing testimonials without re-tagging.
+      if (placements.length === 0) {
+        const isVideo = ['video', 'video_text', 'image_video'].includes(t.type);
+        return wanted === (isVideo ? 'home_video_band' : 'home_clients_say');
+      }
+      return false;
+    });
+    return ok(res, { items: filtered });
+  }
+
   return ok(res, { items });
+});
+
+// GET /api/testimonials/placements  (public — list of placement options)
+const listPlacements = asyncHandler(async (_req, res) => {
+  return ok(res, { items: Testimonial.PLACEMENTS });
 });
 
 // GET /api/testimonials/all  (admin)
@@ -80,9 +117,12 @@ const createTestimonial = asyncHandler(async (req, res) => {
         isActive: body.isActive === 'false' ? false : true,
         cardWidth: body.cardWidth ? parseInt(body.cardWidth, 10) : null,
         cardHeight: body.cardHeight ? parseInt(body.cardHeight, 10) : null,
+        cardPadding: body.cardPadding ? parseInt(body.cardPadding, 10) : null,
+        cardMargin: body.cardMargin ? parseInt(body.cardMargin, 10) : null,
         displayMode: Testimonial.DISPLAY_MODES.includes(body.displayMode)
           ? body.displayMode
           : 'carousel',
+        placements: parsePlacements(body.placements),
       },
       { transaction: tx }
     );
@@ -134,8 +174,13 @@ const updateTestimonial = asyncHandler(async (req, res) => {
     t.cardWidth = body.cardWidth === '' ? null : parseInt(body.cardWidth, 10);
   if (body.cardHeight !== undefined)
     t.cardHeight = body.cardHeight === '' ? null : parseInt(body.cardHeight, 10);
+  if (body.cardPadding !== undefined)
+    t.cardPadding = body.cardPadding === '' ? null : parseInt(body.cardPadding, 10);
+  if (body.cardMargin !== undefined)
+    t.cardMargin = body.cardMargin === '' ? null : parseInt(body.cardMargin, 10);
   if (body.displayMode !== undefined && Testimonial.DISPLAY_MODES.includes(body.displayMode))
     t.displayMode = body.displayMode;
+  if (body.placements !== undefined) t.placements = parsePlacements(body.placements);
 
   const avatarFile = req.files?.avatar?.[0];
   const posterFile = req.files?.videoPoster?.[0];
@@ -211,7 +256,7 @@ const removeMedia = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  listPublic, listAll, getOne,
+  listPublic, listPlacements, listAll, getOne,
   createTestimonial, updateTestimonial,
   toggle, remove, removeMedia,
 };

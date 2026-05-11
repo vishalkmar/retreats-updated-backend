@@ -9,7 +9,7 @@ const Blog = sequelize.define(
     title: { type: DataTypes.STRING(255), allowNull: false },
     slug: { type: DataTypes.STRING(280), allowNull: false },
 
-    excerpt: { type: DataTypes.STRING(500), allowNull: true },
+    excerpt: { type: DataTypes.TEXT('long'), allowNull: true },
     content: { type: DataTypes.TEXT('long'), allowNull: true },
 
     featuredImage: { type: DataTypes.STRING(500), allowNull: true },
