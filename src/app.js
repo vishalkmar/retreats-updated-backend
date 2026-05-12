@@ -13,12 +13,34 @@ const app = express();
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
+const parseOrigins = (...values) =>
+  values
+    .filter(Boolean)
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+const allowedOrigins = parseOrigins(
+  process.env.CLIENT_URL,
+  process.env.PWA_CLIENT_URL,
+  'http://localhost:5173',
+  'http://localhost:5174'
+);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL?.split(',') || '*',
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`CORS blocked origin: ${origin}`));
+    },
     credentials: true,
   })
 );
+app.options('*', cors({ origin: allowedOrigins, credentials: true }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

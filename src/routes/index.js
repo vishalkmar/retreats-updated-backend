@@ -16,6 +16,10 @@ router.use('/uploads', require('./upload.routes'));
 router.use('/site-info', require('./siteInfo.routes'));
 router.use('/section-themes', require('./sectionTheme.routes'));
 
+// PWA — mounted at /api/pwa/* so it stays visibly separate from the
+// website API. See backend/src/pwa/routes/index.js for sub-routes.
+router.use('/pwa', require('../pwa/routes'));
+
 router.get('/health', (req, res) =>
   res.json({ success: true, message: 'API is healthy', timestamp: new Date().toISOString() })
 );

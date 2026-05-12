@@ -114,4 +114,10 @@ BlogCategory.hasMany(Blog, { foreignKey: 'blogCategoryId', as: 'blogs' });
 Blog.hasMany(BlogScene, { foreignKey: 'blogId', as: 'scenes', onDelete: 'CASCADE' });
 BlogScene.belongsTo(Blog, { foreignKey: 'blogId', as: 'blog' });
 
+// PWA models register themselves with sequelize on require. We pull them in
+// here so a single `require('./models')` from app/server boots both worlds.
+// They live under separate `pwa_*` tables and never join with website tables.
+const pwaModels = require('../pwa/models');
+Object.assign(db, { pwa: pwaModels });
+
 module.exports = db;

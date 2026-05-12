@@ -1,7 +1,9 @@
 require('dotenv').config();
+const http = require('http');
 const app = require('./app');
 const { sequelize, connectDB } = require('./config/database');
-require('./models'); // load models
+require('./models'); // load models (incl. PWA via models/index.js)
+const { initSocket } = require('./pwa/services/socket');
 
 const PORT = process.env.PORT || 5000;
 
@@ -103,9 +105,16 @@ const start = async () => {
     console.log('[DB] Skipping sequelize.sync (SKIP_SYNC=true)');
   }
 
-  app.listen(PORT, () => {
+  // Wrap express in a node http server so we can attach Socket.io for the
+  // PWA real-time review loop without touching the website request path.
+  const httpServer = http.createServer(app);
+  initSocket(httpServer);
+
+  httpServer.listen(PORT, () => {
     console.log(`[SERVER] Running on http://localhost:${PORT}`);
     console.log(`[SERVER] API base: http://localhost:${PORT}/api`);
+    console.log(`[SERVER] PWA API base: http://localhost:${PORT}/api/pwa`);
+    console.log('[SERVER] Socket.io initialized');
   });
 };
 
