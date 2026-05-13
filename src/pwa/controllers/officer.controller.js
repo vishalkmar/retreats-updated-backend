@@ -105,7 +105,7 @@ const claim = asyncHandler(async (req, res) => {
 
 const decideField = asyncHandler(async (req, res) => {
   const { id: propertyId, sectionKey } = req.params;
-  const { decision, comment } = req.body;
+  const { decision, comment, approvedForFutureReview } = req.body;
   if (!SECTION_KEY_SET.has(sectionKey)) return fail(res, 'Invalid section', 400);
   if (![FIELD_DECISION.APPROVED, FIELD_DECISION.REJECTED].includes(decision)) {
     return fail(res, 'decision must be approved or objection', 400);
@@ -133,6 +133,7 @@ const decideField = asyncHandler(async (req, res) => {
   });
   review.decision = decision;
   review.comment = decision === FIELD_DECISION.REJECTED ? comment.trim() : null;
+  review.approvedForFutureReview = decision === FIELD_DECISION.APPROVED && approvedForFutureReview === true;
   review.officerId = req.pwaUser.id;
   review.reviewedAt = new Date();
   await review.save();

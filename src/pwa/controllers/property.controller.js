@@ -32,6 +32,11 @@ const loadOwnProperty = async (auditorId, id) => {
   });
 };
 
+const minPhotosForSection = (property, sectionKey) => {
+  const roomBased = Math.ceil((Number(property.numberOfRooms) || 0) * 0.5);
+  return sectionKey === 'rooms' ? Math.max(3, roomBased || 3) : 3;
+};
+
 // --- Phase 1: Auditor creates property with basic details --------------
 
 const createPhase1 = asyncHandler(async (req, res) => {
@@ -52,13 +57,16 @@ const createPhase1 = asyncHandler(async (req, res) => {
   if (!name?.trim() || !address?.trim() || !ownerName?.trim() || !ownerEmail?.trim()) {
     return fail(res, 'Name, address, owner name and owner email are required', 400);
   }
+  if (!latitude || !longitude) {
+    return fail(res, 'Pinned current location is required', 400);
+  }
 
   const property = await Property.create({
     auditorId: req.pwaUser.id,
     name: name.trim(),
     address: address.trim(),
-    locationMode: locationMode === 'pinned' ? 'pinned' : 'manual',
-    locationText: locationText?.trim() || null,
+    locationMode: 'pinned',
+    locationText: locationText?.trim() || address.trim(),
     latitude: latitude || null,
     longitude: longitude || null,
     ownerName: ownerName.trim(),
@@ -125,6 +133,11 @@ const upsertSection = asyncHandler(async (req, res) => {
     existingPhotos.forEach((u) => removeUploadedFile(u));
   }
   const merged = [...kept, ...incomingPhotos];
+  const minimumPhotos = minPhotosForSection(property, sectionKey);
+  if (merged.length < minimumPhotos) {
+    incomingPhotos.forEach((u) => removeUploadedFile(u));
+    return fail(res, `${minimumPhotos} photos are required for this section`, 400);
+  }
 
   if (!field) {
     field = await PropertyField.create({
@@ -150,6 +163,7 @@ const upsertSection = asyncHandler(async (req, res) => {
   if (review) {
     review.decision = FIELD_DECISION.PENDING;
     review.comment = null;
+    review.approvedForFutureReview = false;
     review.reviewedAt = null;
     await review.save();
   }
@@ -171,14 +185,14 @@ const submitForReview = asyncHandler(async (req, res) => {
   if (!property) return fail(res, 'Property not found', 404);
   if (!property.propertyCode) return fail(res, 'Generate the Property ID first', 400);
 
-  // Validate every required section has a description and >= 1 photo
+  // Validate every required section has a description and enough live photos.
   const fields = await PropertyField.findAll({ where: { propertyId: property.id } });
   const byKey = Object.fromEntries(fields.map((f) => [f.sectionKey, f]));
   const missing = SECTION_KEYS
     .filter((s) => s.required)
     .filter((s) => {
       const f = byKey[s.key];
-      return !f || !f.description?.trim() || !(f.photoUrls || []).length;
+      return !f || !f.description?.trim() || (f.photoUrls || []).length < minPhotosForSection(property, s.key);
     })
     .map((s) => s.label);
 

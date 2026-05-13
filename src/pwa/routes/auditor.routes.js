@@ -4,7 +4,7 @@ const { authenticatePwa, requireRoles } = require('../middlewares/pwaAuth.middle
 const { buildUploader } = require('../../middlewares/upload.middleware');
 
 const upload = buildUploader('pwa-audits');
-const sectionUpload = upload.array('photos', 10);
+const sectionUpload = upload.array('photos', 50);
 
 router.use(authenticatePwa, requireRoles('auditor'));
 

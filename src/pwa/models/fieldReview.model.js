@@ -17,6 +17,7 @@ const FieldReview = sequelize.define(
       defaultValue: 'pending',
     },
     comment: { type: DataTypes.TEXT, allowNull: true },
+    approvedForFutureReview: { type: DataTypes.BOOLEAN, defaultValue: false },
     officerId: { type: DataTypes.INTEGER, allowNull: true },
     reviewedAt: { type: DataTypes.DATE, allowNull: true },
   },
