@@ -87,24 +87,30 @@ const listPublic = asyncHandler(async (req, res) => {
     ];
   }
 
+  const filterInclude = [];
+  if (city) filterInclude.push({ model: City, as: 'city', where: { slug: city }, required: true });
+  if (category) {
+    filterInclude.push({
+      model: Category, as: 'categories', through: { attributes: [] }, where: { slug: category }, required: true,
+    });
+  }
+  if (problem) {
+    filterInclude.push({
+      model: Problem, as: 'problems', through: { attributes: [] }, where: { slug: problem }, required: true,
+    });
+  }
+  if (activity) {
+    filterInclude.push({
+      model: Activity, as: 'activities', through: { attributes: [] }, where: { slug: activity }, required: true,
+    });
+  }
+
   const include = [
-    {
-      model: City, as: 'city',
-      ...(city && { where: { slug: city }, required: true }),
-    },
-    {
-      model: Category, as: 'categories', through: { attributes: [] },
-      ...(category && { where: { slug: category }, required: true }),
-    },
-    {
-      model: Problem, as: 'problems', through: { attributes: [] },
-      ...(problem && { where: { slug: problem }, required: true }),
-    },
-    {
-      model: Activity, as: 'activities', through: { attributes: [] },
-      ...(activity && { where: { slug: activity }, required: true }),
-    },
-    { model: PackageImage, as: 'gallery' },
+    { model: City, as: 'city' },
+    { model: Category, as: 'categories', through: { attributes: [] } },
+    { model: Problem, as: 'problems', through: { attributes: [] } },
+    { model: Activity, as: 'activities', through: { attributes: [] } },
+    { model: PackageImage, as: 'gallery', separate: true, order: [['sortOrder', 'ASC'], ['id', 'ASC']] },
   ];
 
   let order = [['sortOrder', 'ASC'], ['id', 'DESC']];
@@ -115,15 +121,24 @@ const listPublic = asyncHandler(async (req, res) => {
 
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-  const { rows, count } = await Package.findAndCountAll({
+  const { rows: matches, count } = await Package.findAndCountAll({
     where,
-    include,
+    include: filterInclude,
+    attributes: ['id'],
     order,
     limit: parseInt(limit, 10),
     offset,
     distinct: true,
     subQuery: false,
   });
+  const ids = matches.map((p) => p.id);
+  const rows = ids.length
+    ? await Package.findAll({
+        where: { id: { [Op.in]: ids } },
+        include,
+        order,
+      })
+    : [];
 
   return ok(res, {
     items: rows,
