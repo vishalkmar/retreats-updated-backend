@@ -22,6 +22,11 @@ const Package = sequelize.define(
 
     // Location
     cityId: { type: DataTypes.INTEGER, allowNull: true },
+    locationId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'FK to Location taxonomy (shared with Hotels)',
+    },
     locationDetail: {
       type: DataTypes.STRING(255),
       allowNull: true,
@@ -62,6 +67,7 @@ const Package = sequelize.define(
     freeCancellation: { type: DataTypes.BOOLEAN, defaultValue: true },
     isGoldHost: { type: DataTypes.BOOLEAN, defaultValue: false },
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
+    isPopular: { type: DataTypes.BOOLEAN, defaultValue: false },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
 
     // Single rich-text block that previously combined highlights/inclusions/
@@ -174,8 +180,10 @@ const Package = sequelize.define(
     indexes: [
       { name: 'packages_slug_unique', unique: true, fields: ['slug'] },
       { fields: ['cityId'] },
+      { fields: ['locationId'] },
       { fields: ['isActive'] },
       { fields: ['isFeatured'] },
+      { fields: ['isPopular'] },
       { fields: ['priceFrom'] },
     ],
   }

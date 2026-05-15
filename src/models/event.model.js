@@ -1,0 +1,70 @@
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
+
+const Event = sequelize.define(
+  'Event',
+  {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+
+    // Identity
+    name: { type: DataTypes.STRING(220), allowNull: false },
+    slug: { type: DataTypes.STRING(240), allowNull: false },
+
+    // Type & location (FKs to taxonomies)
+    eventTypeId: { type: DataTypes.INTEGER, allowNull: true },
+    locationId: { type: DataTypes.INTEGER, allowNull: true },
+
+    // Schedule
+    eventDate: { type: DataTypes.DATEONLY, allowNull: true, comment: 'Specific date if one-off' },
+    startTime: { type: DataTypes.STRING(8), allowNull: true, comment: 'HH:mm display string' },
+    endTime: { type: DataTypes.STRING(8), allowNull: true },
+    // For multi-day events
+    endDate: { type: DataTypes.DATEONLY, allowNull: true },
+
+    // Pricing
+    price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+    priceOriginal: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
+
+    // Age limits
+    minAge: { type: DataTypes.INTEGER, allowNull: true },
+    maxAge: { type: DataTypes.INTEGER, allowNull: true },
+
+    // Media
+    mainImage: { type: DataTypes.STRING(500), allowNull: true },
+    mapEmbedHtml: { type: DataTypes.TEXT('long'), allowNull: true },
+
+    // Rich-text content
+    aboutRich: { type: DataTypes.TEXT('long'), allowNull: true },
+    highlightsRich: { type: DataTypes.TEXT('long'), allowNull: true },
+    termsConditions: { type: DataTypes.TEXT('long'), allowNull: true },
+    privacyPolicy: { type: DataTypes.TEXT('long'), allowNull: true },
+
+    // For sport-type events: list of sub-sports user can pick. JSON array of
+    // { id, name, defaultPrice } — slots are bound to specific sport names.
+    sports: {
+      type: DataTypes.JSON,
+      defaultValue: [],
+      comment: 'Sub-sport options for sport-type events',
+    },
+
+    // Flags
+    isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
+    isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
+
+    sortOrder: { type: DataTypes.INTEGER, defaultValue: 0 },
+  },
+  {
+    tableName: 'events',
+    indexes: [
+      { name: 'events_slug_unique', unique: true, fields: ['slug'] },
+      { fields: ['eventTypeId'] },
+      { fields: ['locationId'] },
+      { fields: ['eventDate'] },
+      { fields: ['isActive'] },
+      { fields: ['isFeatured'] },
+    ],
+  }
+);
+
+module.exports = Event;

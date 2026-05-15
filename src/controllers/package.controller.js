@@ -6,9 +6,13 @@ const {
   PackageImage,
   PackageReview,
   City,
+  Location,
   Category,
   Problem,
   Activity,
+  NearbyPlace,
+  Area,
+  Culture,
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
@@ -46,9 +50,13 @@ const parseIntArray = (raw) => {
 
 const baseInclude = (publicOnly = false) => [
   { model: City, as: 'city' },
+  { model: Location, as: 'location' },
   { model: Category, as: 'categories', through: { attributes: [] } },
   { model: Problem, as: 'problems', through: { attributes: [] } },
   { model: Activity, as: 'activities', through: { attributes: [] } },
+  { model: NearbyPlace, as: 'nearbyPlaces', through: { attributes: [] } },
+  { model: Area, as: 'areas', through: { attributes: [] } },
+  { model: Culture, as: 'cultures', through: { attributes: [] } },
   { model: PackageImage, as: 'gallery' },
   publicOnly
     ? { model: PackageReview, as: 'reviews', where: { isApproved: true }, required: false }
@@ -59,15 +67,27 @@ const baseInclude = (publicOnly = false) => [
 const listPublic = asyncHandler(async (req, res) => {
   const {
     city,
+    location,           // slug
     category,
     problem,
     activity,
+    nearby,             // NearbyPlace slug
+    area,               // Area slug
+    culture,            // Culture slug
     minPrice,
     maxPrice,
-    minDuration,
+    minDuration,        // days
     maxDuration,
+    minNights,
+    maxNights,
+    minRating,
+    startDate,
+    endDate,
+    month,              // 1..12 — month-only filter
+    year,               // YYYY — year-only filter
     search,
     featured,
+    popular,
     sort,
     page = 1,
     limit = 12,
@@ -78,7 +98,53 @@ const listPublic = asyncHandler(async (req, res) => {
   if (maxPrice) where.priceFrom = { ...(where.priceFrom || {}), [Op.lte]: parseFloat(maxPrice) };
   if (minDuration) where.durationDays = { ...(where.durationDays || {}), [Op.gte]: parseInt(minDuration, 10) };
   if (maxDuration) where.durationDays = { ...(where.durationDays || {}), [Op.lte]: parseInt(maxDuration, 10) };
+  if (minNights) where.durationNights = { ...(where.durationNights || {}), [Op.gte]: parseInt(minNights, 10) };
+  if (maxNights) where.durationNights = { ...(where.durationNights || {}), [Op.lte]: parseInt(maxNights, 10) };
+  if (minRating) where.rating = { [Op.gte]: parseFloat(minRating) };
   if (featured === 'true') where.isFeatured = true;
+  if (popular === 'true') where.isPopular = true;
+
+  // Date-range filter — overlap logic. A package's [startDate, endDate] should
+  // overlap with the requested [startDate, endDate] window. Packages with
+  // `availableAllYear === true` always match.
+  if (startDate || endDate) {
+    where[Op.and] = where[Op.and] || [];
+    where[Op.and].push({
+      [Op.or]: [
+        { availableAllYear: true },
+        {
+          [Op.and]: [
+            startDate ? { [Op.or]: [{ endDate: { [Op.gte]: startDate } }, { endDate: null }] } : {},
+            endDate ? { [Op.or]: [{ startDate: { [Op.lte]: endDate } }, { startDate: null }] } : {},
+          ],
+        },
+      ],
+    });
+  }
+
+  // Month / Year filter — match if package's window includes that month/year,
+  // or it's availableAllYear.
+  if (month || year) {
+    const monthInt = month ? parseInt(month, 10) : null;
+    const yearInt = year ? parseInt(year, 10) : null;
+    const targetStart = `${yearInt || new Date().getFullYear()}-${String(monthInt || 1).padStart(2, '0')}-01`;
+    const targetEnd = monthInt
+      ? `${yearInt || new Date().getFullYear()}-${String(monthInt).padStart(2, '0')}-28`
+      : `${yearInt || new Date().getFullYear()}-12-31`;
+    where[Op.and] = where[Op.and] || [];
+    where[Op.and].push({
+      [Op.or]: [
+        { availableAllYear: true },
+        {
+          [Op.and]: [
+            { [Op.or]: [{ endDate: { [Op.gte]: targetStart } }, { endDate: null }] },
+            { [Op.or]: [{ startDate: { [Op.lte]: targetEnd } }, { startDate: null }] },
+          ],
+        },
+      ],
+    });
+  }
+
   if (search) {
     where[Op.or] = [
       { name: { [Op.like]: `%${search}%` } },
@@ -89,6 +155,23 @@ const listPublic = asyncHandler(async (req, res) => {
 
   const filterInclude = [];
   if (city) filterInclude.push({ model: City, as: 'city', where: { slug: city }, required: true });
+
+  // Lenient location matching — a package "in Rishikesh" can match via the new
+  // locationId FK, OR via the legacy cityId FK with the same slug, OR via a
+  // case-insensitive locationDetail contains. We LEFT-JOIN both relations as
+  // non-required and require at least one to match in the WHERE clause.
+  if (location) {
+    filterInclude.push({ model: Location, as: 'location', where: { slug: location }, required: false });
+    if (!city) filterInclude.push({ model: City, as: 'city', where: { slug: location }, required: false });
+    where[Op.and] = where[Op.and] || [];
+    where[Op.and].push({
+      [Op.or]: [
+        { '$location.slug$': location },
+        { '$city.slug$': location },
+        { locationDetail: { [Op.like]: `%${location}%` } },
+      ],
+    });
+  }
   if (category) {
     filterInclude.push({
       model: Category, as: 'categories', through: { attributes: [] }, where: { slug: category }, required: true,
@@ -104,12 +187,31 @@ const listPublic = asyncHandler(async (req, res) => {
       model: Activity, as: 'activities', through: { attributes: [] }, where: { slug: activity }, required: true,
     });
   }
+  if (nearby) {
+    filterInclude.push({
+      model: NearbyPlace, as: 'nearbyPlaces', through: { attributes: [] }, where: { slug: nearby }, required: true,
+    });
+  }
+  if (area) {
+    filterInclude.push({
+      model: Area, as: 'areas', through: { attributes: [] }, where: { slug: area }, required: true,
+    });
+  }
+  if (culture) {
+    filterInclude.push({
+      model: Culture, as: 'cultures', through: { attributes: [] }, where: { slug: culture }, required: true,
+    });
+  }
 
   const include = [
     { model: City, as: 'city' },
+    { model: Location, as: 'location' },
     { model: Category, as: 'categories', through: { attributes: [] } },
     { model: Problem, as: 'problems', through: { attributes: [] } },
     { model: Activity, as: 'activities', through: { attributes: [] } },
+    { model: NearbyPlace, as: 'nearbyPlaces', through: { attributes: [] } },
+    { model: Area, as: 'areas', through: { attributes: [] } },
+    { model: Culture, as: 'cultures', through: { attributes: [] } },
     { model: PackageImage, as: 'gallery', separate: true, order: [['sortOrder', 'ASC'], ['id', 'ASC']] },
   ];
 
@@ -208,6 +310,7 @@ const createPackage = asyncHandler(async (req, res) => {
         primaryImage: primaryImageFile ? buildUrl(primaryImageFile) : null,
         videoUrl: body.videoUrl || null,
         cityId: body.cityId ? parseInt(body.cityId, 10) : null,
+        locationId: body.locationId ? parseInt(body.locationId, 10) : null,
         locationDetail: body.locationDetail || null,
         durationDays: body.durationDays ? parseInt(body.durationDays, 10) : 1,
         durationNights: body.durationNights ? parseInt(body.durationNights, 10) : 0,
@@ -223,6 +326,7 @@ const createPackage = asyncHandler(async (req, res) => {
         freeCancellation: body.freeCancellation === 'false' ? false : true,
         isGoldHost: body.isGoldHost === 'true',
         isFeatured: body.isFeatured === 'true',
+        isPopular: body.isPopular === 'true',
         isActive: body.isActive === 'false' ? false : true,
         richContent: body.richContent || null,
         highlightsRich: body.highlightsRich || null,
@@ -259,9 +363,15 @@ const createPackage = asyncHandler(async (req, res) => {
     const categoryIds = parseIntArray(body.categoryIds);
     const problemIds = parseIntArray(body.problemIds);
     const activityIds = parseIntArray(body.activityIds);
+    const nearbyPlaceIds = parseIntArray(body.nearbyPlaceIds);
+    const areaIds = parseIntArray(body.areaIds);
+    const cultureIds = parseIntArray(body.cultureIds);
     if (categoryIds.length) await pkg.setCategories(categoryIds, { transaction: t });
     if (problemIds.length) await pkg.setProblems(problemIds, { transaction: t });
     if (activityIds.length) await pkg.setActivities(activityIds, { transaction: t });
+    if (nearbyPlaceIds.length) await pkg.setNearbyPlaces(nearbyPlaceIds, { transaction: t });
+    if (areaIds.length) await pkg.setAreas(areaIds, { transaction: t });
+    if (cultureIds.length) await pkg.setCultures(cultureIds, { transaction: t });
 
     // Gallery
     if (galleryFiles.length) {
@@ -315,7 +425,7 @@ const updatePackage = asyncHandler(async (req, res) => {
     if (body[f] !== undefined) pkg[f] = body[f] === '' ? null : body[f];
   });
 
-  const intFields = ['cityId', 'durationDays', 'durationNights', 'minGroupSize', 'maxGroupSize', 'sortOrder'];
+  const intFields = ['cityId', 'locationId', 'durationDays', 'durationNights', 'minGroupSize', 'maxGroupSize', 'sortOrder'];
   intFields.forEach((f) => {
     if (body[f] !== undefined && body[f] !== '') pkg[f] = parseInt(body[f], 10);
   });
@@ -324,7 +434,7 @@ const updatePackage = asyncHandler(async (req, res) => {
   if (body.priceOriginal !== undefined)
     pkg.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
 
-  const boolFields = ['availableAllYear', 'freeCancellation', 'isGoldHost', 'isFeatured', 'isActive'];
+  const boolFields = ['availableAllYear', 'freeCancellation', 'isGoldHost', 'isFeatured', 'isPopular', 'isActive'];
   boolFields.forEach((f) => {
     if (body[f] !== undefined) pkg[f] = body[f] === 'true' || body[f] === true;
   });
@@ -347,6 +457,9 @@ const updatePackage = asyncHandler(async (req, res) => {
   if (body.categoryIds !== undefined) await pkg.setCategories(parseIntArray(body.categoryIds));
   if (body.problemIds !== undefined) await pkg.setProblems(parseIntArray(body.problemIds));
   if (body.activityIds !== undefined) await pkg.setActivities(parseIntArray(body.activityIds));
+  if (body.nearbyPlaceIds !== undefined) await pkg.setNearbyPlaces(parseIntArray(body.nearbyPlaceIds));
+  if (body.areaIds !== undefined) await pkg.setAreas(parseIntArray(body.areaIds));
+  if (body.cultureIds !== undefined) await pkg.setCultures(parseIntArray(body.cultureIds));
 
   if (galleryFiles.length) {
     if (body.replaceGallery === 'true') {
@@ -381,7 +494,8 @@ const duplicatePackage = asyncHandler(async (req, res) => {
     // strip fields that should not be copied
     [
       'id', 'slug', 'createdAt', 'updatedAt', 'rating', 'reviewCount',
-      'interestedCount', 'city', 'categories', 'problems', 'activities',
+      'interestedCount', 'city', 'location', 'categories', 'problems', 'activities',
+      'nearbyPlaces', 'areas', 'cultures',
       'gallery', 'reviews',
     ].forEach((k) => delete data[k]);
 
@@ -400,9 +514,15 @@ const duplicatePackage = asyncHandler(async (req, res) => {
     const categoryIds = (original.categories || []).map((c) => c.id);
     const problemIds = (original.problems || []).map((p) => p.id);
     const activityIds = (original.activities || []).map((a) => a.id);
+    const nearbyPlaceIds = (original.nearbyPlaces || []).map((n) => n.id);
+    const areaIds = (original.areas || []).map((a) => a.id);
+    const cultureIds = (original.cultures || []).map((c) => c.id);
     if (categoryIds.length) await copy.setCategories(categoryIds, { transaction: t });
     if (problemIds.length) await copy.setProblems(problemIds, { transaction: t });
     if (activityIds.length) await copy.setActivities(activityIds, { transaction: t });
+    if (nearbyPlaceIds.length) await copy.setNearbyPlaces(nearbyPlaceIds, { transaction: t });
+    if (areaIds.length) await copy.setAreas(areaIds, { transaction: t });
+    if (cultureIds.length) await copy.setCultures(cultureIds, { transaction: t });
 
     // Gallery — duplicate rows pointing at the same uploaded URLs (we don't
     // re-upload the binary; both packages share the cloud asset until edited).
