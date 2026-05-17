@@ -502,7 +502,7 @@ const duplicatePackage = asyncHandler(async (req, res) => {
     const copy = await Package.create(
       {
         ...data,
-        name: `${original.name} (Copy)`,
+        name: original.name,
         slug,
         isActive: false, // start as draft
         isFeatured: false,

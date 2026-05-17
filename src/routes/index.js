@@ -20,6 +20,7 @@ router.use('/rooms', require('./availableRoom.routes'));
 router.use('/add-ons', require('./addOnActivity.routes'));
 router.use('/event-types', require('./eventType.routes'));
 router.use('/events', require('./event.routes'));
+router.use('/promo-banners', require('./promoBanner.routes'));
 router.use('/testimonials', require('./testimonial.routes'));
 router.use('/blog-categories', require('./blogCategory.routes'));
 router.use('/blogs', require('./blog.routes'));

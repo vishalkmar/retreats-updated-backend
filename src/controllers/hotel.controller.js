@@ -349,7 +349,7 @@ const duplicateHotel = asyncHandler(async (req, res) => {
     const copy = await Hotel.create(
       {
         ...data,
-        name: `${original.name} (Copy)`,
+        name: original.name,
         slug,
         isActive: false,
         isFeatured: false,

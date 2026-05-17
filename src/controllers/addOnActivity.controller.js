@@ -234,7 +234,7 @@ const duplicateActivity = asyncHandler(async (req, res) => {
     const copy = await AddOnActivity.create(
       {
         ...data,
-        name: `${original.name} (Copy)`,
+        name: original.name,
         slug,
         isActive: false,
         isFeatured: false,

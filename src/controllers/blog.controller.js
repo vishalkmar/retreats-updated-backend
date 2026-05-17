@@ -310,7 +310,7 @@ const duplicateBlog = asyncHandler(async (req, res) => {
 
   const copy = await Blog.create({
     ...data,
-    title: `${original.title} (Copy)`,
+    title: original.title,
     slug,
     isPublished: false,
     isFeatured: false,

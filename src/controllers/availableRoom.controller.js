@@ -278,7 +278,7 @@ const duplicateRoom = asyncHandler(async (req, res) => {
     const copy = await AvailableRoom.create(
       {
         ...data,
-        name: `${original.name} (Copy)`,
+        name: original.name,
         slug,
         isActive: false,
         isFeatured: false,

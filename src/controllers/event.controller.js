@@ -265,7 +265,7 @@ const duplicateEvent = asyncHandler(async (req, res) => {
     ['id', 'slug', 'createdAt', 'updatedAt', 'eventType', 'location', 'gallery'].forEach((k) => delete data[k]);
     const copy = await Event.create({
       ...data,
-      name: `${original.name} (Copy)`,
+      name: original.name,
       slug,
       isActive: false,
       isFeatured: false,

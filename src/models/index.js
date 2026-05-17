@@ -27,6 +27,8 @@ const EventType = require('./eventType.model');
 const Event = require('./event.model');
 const EventImage = require('./eventImage.model');
 const EventSlot = require('./eventSlot.model');
+const PromoBanner = require('./promoBanner.model');
+const PromoBannerSlide = require('./promoBannerSlide.model');
 const Testimonial = require('./testimonial.model');
 const TestimonialMedia = require('./testimonialMedia.model');
 const Blog = require('./blog.model');
@@ -63,6 +65,8 @@ const db = {
   Event,
   EventImage,
   EventSlot,
+  PromoBanner,
+  PromoBannerSlide,
   Testimonial,
   TestimonialMedia,
   Blog,
@@ -309,6 +313,14 @@ EventImage.belongsTo(Event, { foreignKey: 'eventId', as: 'event' });
 // Event <-> EventSlot (slots — only relevant for sport-type events)
 Event.hasMany(EventSlot, { foreignKey: 'eventId', as: 'slots', onDelete: 'CASCADE' });
 EventSlot.belongsTo(Event, { foreignKey: 'eventId', as: 'event' });
+
+// ─── Promo Banners ────────────────────────────────────────────────────────
+PromoBanner.hasMany(PromoBannerSlide, {
+  foreignKey: 'bannerId',
+  as: 'slides',
+  onDelete: 'CASCADE',
+});
+PromoBannerSlide.belongsTo(PromoBanner, { foreignKey: 'bannerId', as: 'banner' });
 
 // PWA models register themselves with sequelize on require. We pull them in
 // here so a single `require('./models')` from app/server boots both worlds.
