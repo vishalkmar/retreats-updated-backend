@@ -52,6 +52,10 @@ const Event = sequelize.define(
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
 
+    // Ratings — populated from approved reviews via Review controller's recompute
+    rating: { type: DataTypes.DECIMAL(3, 2), defaultValue: 0 },
+    reviewCount: { type: DataTypes.INTEGER, defaultValue: 0 },
+
     sortOrder: { type: DataTypes.INTEGER, defaultValue: 0 },
   },
   {

@@ -7,6 +7,7 @@ const {
   EventType,
   EventSlot,
   Location,
+  Review,
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
@@ -37,10 +38,13 @@ const parseJsonField = (raw, fallback = []) => {
   try { return JSON.parse(raw); } catch { return fallback; }
 };
 
-const baseInclude = () => [
+const baseInclude = (publicOnly = false) => [
   { model: EventType, as: 'eventType' },
   { model: Location, as: 'location' },
   { model: EventImage, as: 'gallery' },
+  publicOnly
+    ? { model: Review, as: 'reviews', where: { isApproved: true }, required: false, separate: true, order: [['createdAt', 'DESC']] }
+    : { model: Review, as: 'reviews', separate: true, order: [['createdAt', 'DESC']] },
 ];
 
 // ─── Public ───────────────────────────────────────────────────────────────
@@ -117,7 +121,7 @@ const listPublic = asyncHandler(async (req, res) => {
 const getBySlug = asyncHandler(async (req, res) => {
   const event = await Event.findOne({
     where: { slug: req.params.slug, isActive: true },
-    include: baseInclude(),
+    include: baseInclude(true),
   });
   if (!event) return fail(res, 'Event not found', 404);
   return ok(res, { event });

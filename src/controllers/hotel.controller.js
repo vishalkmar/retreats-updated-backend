@@ -8,6 +8,7 @@ const {
   Location,
   Facility,
   NearbyPlace,
+  Review,
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
@@ -43,12 +44,15 @@ const parseIntArray = (raw) => {
   return Array.isArray(arr) ? arr.map((x) => parseInt(x, 10)).filter(Boolean) : [];
 };
 
-const baseInclude = () => [
+const baseInclude = (publicOnly = false) => [
   { model: Location, as: 'location' },
   { model: City, as: 'city' },
   { model: Facility, as: 'facilities', through: { attributes: [] } },
   { model: NearbyPlace, as: 'nearbyPlaces', through: { attributes: [] } },
   { model: HotelImage, as: 'gallery' },
+  publicOnly
+    ? { model: Review, as: 'reviews', where: { isApproved: true }, required: false, separate: true, order: [['createdAt', 'DESC']] }
+    : { model: Review, as: 'reviews', separate: true, order: [['createdAt', 'DESC']] },
 ];
 
 // ─── Public ───────────────────────────────────────────────────────────────
@@ -154,7 +158,7 @@ const listPublic = asyncHandler(async (req, res) => {
 const getBySlug = asyncHandler(async (req, res) => {
   const hotel = await Hotel.findOne({
     where: { slug: req.params.slug, isActive: true },
-    include: baseInclude(),
+    include: baseInclude(true),
   });
   if (!hotel) return fail(res, 'Hotel not found', 404);
   return ok(res, { hotel });

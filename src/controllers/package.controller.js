@@ -4,7 +4,8 @@ const { Op } = require('sequelize');
 const {
   Package,
   PackageImage,
-  PackageReview,
+  Review,
+  Trainer,
   City,
   Location,
   Category,
@@ -15,6 +16,7 @@ const {
   Culture,
   sequelize,
 } = require('../models');
+const reviewCtrl = require('./review.controller');
 const { ok, created, fail } = require('../utils/response');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
@@ -59,8 +61,11 @@ const baseInclude = (publicOnly = false) => [
   { model: Culture, as: 'cultures', through: { attributes: [] } },
   { model: PackageImage, as: 'gallery' },
   publicOnly
-    ? { model: PackageReview, as: 'reviews', where: { isApproved: true }, required: false }
-    : { model: PackageReview, as: 'reviews' },
+    ? { model: Trainer, as: 'trainers', through: { attributes: [] }, where: { isActive: true }, required: false }
+    : { model: Trainer, as: 'trainers', through: { attributes: [] } },
+  publicOnly
+    ? { model: Review, as: 'reviews', where: { isApproved: true }, required: false, separate: true, order: [['createdAt', 'DESC']] }
+    : { model: Review, as: 'reviews', separate: true, order: [['createdAt', 'DESC']] },
 ];
 
 // GET /api/packages   (public — listing with filters)
@@ -366,12 +371,14 @@ const createPackage = asyncHandler(async (req, res) => {
     const nearbyPlaceIds = parseIntArray(body.nearbyPlaceIds);
     const areaIds = parseIntArray(body.areaIds);
     const cultureIds = parseIntArray(body.cultureIds);
+    const trainerIds = parseIntArray(body.trainerIds);
     if (categoryIds.length) await pkg.setCategories(categoryIds, { transaction: t });
     if (problemIds.length) await pkg.setProblems(problemIds, { transaction: t });
     if (activityIds.length) await pkg.setActivities(activityIds, { transaction: t });
     if (nearbyPlaceIds.length) await pkg.setNearbyPlaces(nearbyPlaceIds, { transaction: t });
     if (areaIds.length) await pkg.setAreas(areaIds, { transaction: t });
     if (cultureIds.length) await pkg.setCultures(cultureIds, { transaction: t });
+    if (trainerIds.length) await pkg.setTrainers(trainerIds, { transaction: t });
 
     // Gallery
     if (galleryFiles.length) {
@@ -460,6 +467,7 @@ const updatePackage = asyncHandler(async (req, res) => {
   if (body.nearbyPlaceIds !== undefined) await pkg.setNearbyPlaces(parseIntArray(body.nearbyPlaceIds));
   if (body.areaIds !== undefined) await pkg.setAreas(parseIntArray(body.areaIds));
   if (body.cultureIds !== undefined) await pkg.setCultures(parseIntArray(body.cultureIds));
+  if (body.trainerIds !== undefined) await pkg.setTrainers(parseIntArray(body.trainerIds));
 
   if (galleryFiles.length) {
     if (body.replaceGallery === 'true') {
@@ -495,7 +503,7 @@ const duplicatePackage = asyncHandler(async (req, res) => {
     [
       'id', 'slug', 'createdAt', 'updatedAt', 'rating', 'reviewCount',
       'interestedCount', 'city', 'location', 'categories', 'problems', 'activities',
-      'nearbyPlaces', 'areas', 'cultures',
+      'nearbyPlaces', 'areas', 'cultures', 'trainers',
       'gallery', 'reviews',
     ].forEach((k) => delete data[k]);
 
@@ -517,12 +525,14 @@ const duplicatePackage = asyncHandler(async (req, res) => {
     const nearbyPlaceIds = (original.nearbyPlaces || []).map((n) => n.id);
     const areaIds = (original.areas || []).map((a) => a.id);
     const cultureIds = (original.cultures || []).map((c) => c.id);
+    const trainerIds = (original.trainers || []).map((tr) => tr.id);
     if (categoryIds.length) await copy.setCategories(categoryIds, { transaction: t });
     if (problemIds.length) await copy.setProblems(problemIds, { transaction: t });
     if (activityIds.length) await copy.setActivities(activityIds, { transaction: t });
     if (nearbyPlaceIds.length) await copy.setNearbyPlaces(nearbyPlaceIds, { transaction: t });
     if (areaIds.length) await copy.setAreas(areaIds, { transaction: t });
     if (cultureIds.length) await copy.setCultures(cultureIds, { transaction: t });
+    if (trainerIds.length) await copy.setTrainers(trainerIds, { transaction: t });
 
     // Gallery — duplicate rows pointing at the same uploaded URLs (we don't
     // re-upload the binary; both packages share the cloud asset until edited).
@@ -606,124 +616,14 @@ const markInterested = asyncHandler(async (req, res) => {
   return ok(res, { interestedCount: pkg.interestedCount });
 });
 
-// POST /api/packages/:id/reviews  (public — submit, requires approval)
-const submitReview = asyncHandler(async (req, res) => {
-  const { name, email, rating, title, comment } = req.body;
-  if (!name || !rating) return fail(res, 'Name and rating are required', 400);
-
-  const pkg = await Package.findByPk(req.params.id);
-  if (!pkg) return fail(res, 'Package not found', 404);
-
-  const review = await PackageReview.create({
-    packageId: pkg.id,
-    name, email,
-    rating: Math.max(1, Math.min(5, parseInt(rating, 10))),
-    title, comment,
-    isApproved: false,
-  });
-
-  return created(res, { review }, 'Review submitted — pending approval');
-});
-
-// Recompute a package's avg rating + review count from approved reviews
-const recomputePackageStats = async (packageId) => {
-  const stats = await PackageReview.findAll({
-    where: { packageId, isApproved: true },
-    attributes: [
-      [sequelize.fn('AVG', sequelize.col('rating')), 'avgRating'],
-      [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-    ],
-    raw: true,
-  });
-  const avg = parseFloat(stats[0]?.avgRating || 0);
-  const cnt = parseInt(stats[0]?.count || 0, 10);
-  await Package.update(
-    { rating: avg.toFixed(2), reviewCount: cnt },
-    { where: { id: packageId } }
-  );
-};
-
-// GET /api/packages/reviews/public — public list of approved reviews across
-// every package (for the homepage "What our clients say" arc carousel).
-const listApprovedReviewsPublic = asyncHandler(async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 24, 48);
-  const items = await PackageReview.findAll({
-    where: { isApproved: true },
-    include: [{
-      model: Package,
-      as: 'package',
-      attributes: ['id', 'name', 'slug', 'primaryImage'],
-    }],
-    order: [['createdAt', 'DESC']],
-    limit,
-  });
-  return ok(res, { items });
-});
-
-// PATCH /api/packages/reviews/:reviewId/approve  (admin)
-const approveReview = asyncHandler(async (req, res) => {
-  const review = await PackageReview.findByPk(req.params.reviewId);
-  if (!review) return fail(res, 'Review not found', 404);
-  review.isApproved = !review.isApproved;
-  await review.save();
-  await recomputePackageStats(review.packageId);
-  return ok(res, { review }, `Review ${review.isApproved ? 'approved' : 'unapproved'}`);
-});
-
-// GET /api/packages/admin/reviews?status=pending|approved|all  (admin)
-const listReviewsAdmin = asyncHandler(async (req, res) => {
-  const { status = 'pending', packageId, search, page = 1, limit = 20 } = req.query;
-
-  const where = {};
-  if (status === 'pending') where.isApproved = false;
-  else if (status === 'approved') where.isApproved = true;
-  if (packageId) where.packageId = parseInt(packageId, 10);
-  if (search) {
-    const { Op } = require('sequelize');
-    where[Op.or] = [
-      { name: { [Op.like]: `%${search}%` } },
-      { comment: { [Op.like]: `%${search}%` } },
-    ];
-  }
-
-  const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-
-  const { rows, count } = await PackageReview.findAndCountAll({
-    where,
-    include: [{
-      model: Package,
-      as: 'package',
-      attributes: ['id', 'name', 'slug', 'primaryImage'],
-    }],
-    order: [['createdAt', 'DESC']],
-    limit: parseInt(limit, 10),
-    offset,
-  });
-
-  // Pending count (always sent so admins can see at a glance)
-  const pendingCount = await PackageReview.count({ where: { isApproved: false } });
-
-  return ok(res, {
-    items: rows,
-    pendingCount,
-    pagination: {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      total: count,
-      pages: Math.ceil(count / parseInt(limit, 10)),
-    },
-  });
-});
-
-// DELETE /api/packages/reviews/:reviewId  (admin)
-const removeReview = asyncHandler(async (req, res) => {
-  const review = await PackageReview.findByPk(req.params.reviewId);
-  if (!review) return fail(res, 'Review not found', 404);
-  const { packageId, isApproved } = review;
-  await review.destroy();
-  // Only need to recompute if the deleted review was approved
-  if (isApproved) await recomputePackageStats(packageId);
-  return ok(res, {}, 'Review deleted');
+// Review endpoints scoped to packages now live in `/api/reviews` (see
+// review.controller.js). The thin wrapper below preserves the legacy
+// POST /api/packages/:id/reviews path the public PackageDetailPage used,
+// forwarding the call into the unified Review controller with entityType
+// auto-set so older clients keep working without changes.
+const submitReview = asyncHandler(async (req, res, next) => {
+  req.body = { ...req.body, entityType: 'package', entityId: req.params.id };
+  return reviewCtrl.submit(req, res, next);
 });
 
 module.exports = {
@@ -739,9 +639,5 @@ module.exports = {
   removeGalleryImage,
   markInterested,
   submitReview,
-  approveReview,
-  listReviewsAdmin,
-  listApprovedReviewsPublic,
-  removeReview,
   reorderPackages,
 };

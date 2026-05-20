@@ -17,6 +17,10 @@ const Culture = require('./culture.model');
 const Package = require('./package.model');
 const PackageImage = require('./packageImage.model');
 const PackageReview = require('./packageReview.model');
+const Review = require('./review.model');
+const Trainer = require('./trainer.model');
+const ChecklistItem = require('./checklistItem.model');
+const FeaturedTab = require('./featuredTab.model');
 const Hotel = require('./hotel.model');
 const HotelImage = require('./hotelImage.model');
 const AvailableRoom = require('./availableRoom.model');
@@ -55,6 +59,10 @@ const db = {
   Package,
   PackageImage,
   PackageReview,
+  Review,
+  Trainer,
+  ChecklistItem,
+  FeaturedTab,
   Hotel,
   HotelImage,
   AvailableRoom,
@@ -186,9 +194,52 @@ Activity.belongsToMany(Package, {
 Package.hasMany(PackageImage, { foreignKey: 'packageId', as: 'gallery', onDelete: 'CASCADE' });
 PackageImage.belongsTo(Package, { foreignKey: 'packageId', as: 'package' });
 
-// Package <-> PackageReview
-Package.hasMany(PackageReview, { foreignKey: 'packageId', as: 'reviews', onDelete: 'CASCADE' });
+// Package <-> Trainer (M2M — a trainer can lead many packages, a package
+// can have multiple trainers)
+Package.belongsToMany(Trainer, {
+  through: 'package_trainers',
+  foreignKey: 'packageId',
+  otherKey: 'trainerId',
+  as: 'trainers',
+  timestamps: false,
+});
+Trainer.belongsToMany(Package, {
+  through: 'package_trainers',
+  foreignKey: 'trainerId',
+  otherKey: 'packageId',
+  as: 'packages',
+  timestamps: false,
+});
+
+// Legacy PackageReview association — kept so the one-time migration script in
+// scripts/migrateReviews.js can still read from package_reviews. The public &
+// admin code paths use the unified `Review` model below instead.
+Package.hasMany(PackageReview, { foreignKey: 'packageId', as: 'legacyReviews', onDelete: 'CASCADE' });
 PackageReview.belongsTo(Package, { foreignKey: 'packageId', as: 'package' });
+
+// ─── Unified Reviews (polymorphic via entityType + entityId) ──────────────
+// Sequelize doesn't natively support polymorphic FKs, so we set `constraints:
+// false` and scope each side by entityType. The `reviews` alias on each model
+// auto-filters to that entity type, and `Review.entity` is a virtual getter we
+// resolve in the controller.
+Package.hasMany(Review, {
+  foreignKey: 'entityId',
+  constraints: false,
+  scope: { entityType: 'package' },
+  as: 'reviews',
+});
+Event.hasMany(Review, {
+  foreignKey: 'entityId',
+  constraints: false,
+  scope: { entityType: 'event' },
+  as: 'reviews',
+});
+Hotel.hasMany(Review, {
+  foreignKey: 'entityId',
+  constraints: false,
+  scope: { entityType: 'hotel' },
+  as: 'reviews',
+});
 
 // Testimonial <-> TestimonialMedia
 Testimonial.hasMany(TestimonialMedia, { foreignKey: 'testimonialId', as: 'media', onDelete: 'CASCADE' });

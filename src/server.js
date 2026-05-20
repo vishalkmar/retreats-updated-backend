@@ -101,6 +101,42 @@ const start = async () => {
     const syncOpts = process.env.NODE_ENV === 'production' ? {} : { alter: true };
     await syncWithRetry(syncOpts);
     console.log('[DB] Models synchronized');
+
+    // One-time data migrations run after sync. Each one is responsible for
+    // skipping itself on subsequent boots — `migrateReviews` checks whether
+    // the unified `reviews` table already has package rows before copying.
+    try {
+      const { migrate: migrateReviews } = require('./scripts/migrateReviews');
+      const result = await migrateReviews();
+      if (result.copied) {
+        console.log(`[DB] Migrated ${result.copied} legacy package_reviews row(s) into unified reviews table`);
+      }
+    } catch (err) {
+      console.warn('[DB] Review migration failed (non-fatal):', err.message);
+    }
+
+    // Seed default audit-checklist items if the table is empty. Re-runs are
+    // no-ops because the seeder checks count first.
+    try {
+      const { seed: seedChecklist } = require('./scripts/seedChecklist');
+      const result = await seedChecklist();
+      if (result.inserted) {
+        console.log(`[DB] Seeded ${result.inserted} default checklist item(s)`);
+      }
+    } catch (err) {
+      console.warn('[DB] Checklist seed failed (non-fatal):', err.message);
+    }
+
+    // Ensure the 4 Featured Retreats tab rows exist for admin editing
+    try {
+      const { seed: seedFeaturedTabs } = require('./scripts/seedFeaturedTabs');
+      const result = await seedFeaturedTabs();
+      if (result.inserted) {
+        console.log(`[DB] Seeded ${result.inserted} featured tab row(s)`);
+      }
+    } catch (err) {
+      console.warn('[DB] Featured tabs seed failed (non-fatal):', err.message);
+    }
   } else {
     console.log('[DB] Skipping sequelize.sync (SKIP_SYNC=true)');
   }

@@ -13,14 +13,13 @@ const packageUpload = upload.fields([
 
 // Public
 router.get('/', ctrl.listPublic);
-router.get('/reviews/public', ctrl.listApprovedReviewsPublic);
 router.post('/:id/interested', ctrl.markInterested);
+// Legacy review-submission alias (forwards into the unified /api/reviews flow)
 router.post('/:id/reviews', ctrl.submitReview);
 
 // Admin
 router.get('/admin/all', authenticate, ctrl.listAdmin);
 router.put('/admin/reorder', authenticate, ctrl.reorderPackages);
-router.get('/admin/reviews', authenticate, ctrl.listReviewsAdmin);
 router.get('/admin/:id', authenticate, ctrl.getAdminOne);
 router.post('/', authenticate, packageUpload, ctrl.createPackage);
 router.put('/:id', authenticate, packageUpload, ctrl.updatePackage);
@@ -28,8 +27,6 @@ router.post('/:id/duplicate', authenticate, ctrl.duplicatePackage);
 router.patch('/:id/toggle', authenticate, ctrl.toggle);
 router.delete('/:id/gallery/:imageId', authenticate, ctrl.removeGalleryImage);
 router.delete('/:id', authenticate, ctrl.removePackage);
-router.patch('/reviews/:reviewId/approve', authenticate, ctrl.approveReview);
-router.delete('/reviews/:reviewId', authenticate, ctrl.removeReview);
 
 // Public — fetch by slug (must be last to avoid clashing with /admin etc)
 router.get('/:slug', ctrl.getBySlug);
