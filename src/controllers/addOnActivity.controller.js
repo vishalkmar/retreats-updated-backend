@@ -40,6 +40,12 @@ const baseInclude = () => [
   { model: AddOnActivityImage, as: 'gallery' },
 ];
 
+// AddOn cards only render the column `mainImage` + location name, so the
+// gallery rows are pure dead weight on the list. Drop them.
+const listInclude = () => [
+  { model: Location, as: 'location' },
+];
+
 // GET /api/add-ons  (public — listing with optional location filter)
 const listPublic = asyncHandler(async (req, res) => {
   const { location, locationId, featured, limit = 12, page = 1 } = req.query;
@@ -48,7 +54,7 @@ const listPublic = asyncHandler(async (req, res) => {
   if (locationId) where.locationId = parseInt(locationId, 10);
   if (featured === 'true') where.isFeatured = true;
 
-  const include = baseInclude();
+  const include = listInclude();
   if (location) {
     include[0] = { ...include[0], where: { slug: location }, required: true };
   }

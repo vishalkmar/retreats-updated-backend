@@ -208,16 +208,17 @@ const listPublic = asyncHandler(async (req, res) => {
     });
   }
 
+  // List payload is intentionally slim. PackageCard only touches: location,
+  // city, categories (for chips), activities (for chips), plus columns
+  // (primaryImage, priceFrom, rating, reviewCount, …). Everything else —
+  // problems, nearby places, areas, cultures, gallery rows, reviews — is
+  // fetched on the detail page only. Cuts the JOIN graph from 7+ many-to-
+  // many tables down to 2, which is where most of the 13 s came from.
   const include = [
     { model: City, as: 'city' },
     { model: Location, as: 'location' },
     { model: Category, as: 'categories', through: { attributes: [] } },
-    { model: Problem, as: 'problems', through: { attributes: [] } },
     { model: Activity, as: 'activities', through: { attributes: [] } },
-    { model: NearbyPlace, as: 'nearbyPlaces', through: { attributes: [] } },
-    { model: Area, as: 'areas', through: { attributes: [] } },
-    { model: Culture, as: 'cultures', through: { attributes: [] } },
-    { model: PackageImage, as: 'gallery', separate: true, order: [['sortOrder', 'ASC'], ['id', 'ASC']] },
   ];
 
   let order = [['sortOrder', 'ASC'], ['id', 'DESC']];
@@ -255,6 +256,22 @@ const listPublic = asyncHandler(async (req, res) => {
       total: count,
       pages: Math.ceil(count / parseInt(limit, 10)),
     },
+  });
+});
+
+// GET /api/packages/price-stats  (public — tiny aggregate, no JOINs)
+const priceStats = asyncHandler(async (req, res) => {
+  const row = await Package.findOne({
+    where: { isActive: true },
+    attributes: [
+      [sequelize.fn('MIN', sequelize.col('priceFrom')), 'min'],
+      [sequelize.fn('MAX', sequelize.col('priceFrom')), 'max'],
+    ],
+    raw: true,
+  });
+  return ok(res, {
+    min: Number(row?.min) || 0,
+    max: Number(row?.max) || 0,
   });
 });
 
@@ -628,6 +645,7 @@ const submitReview = asyncHandler(async (req, res, next) => {
 
 module.exports = {
   listPublic,
+  priceStats,
   getBySlug,
   listAdmin,
   getAdminOne,

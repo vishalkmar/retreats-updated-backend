@@ -55,6 +55,17 @@ const baseInclude = (publicOnly = false) => [
     : { model: Review, as: 'reviews', separate: true, order: [['createdAt', 'DESC']] },
 ];
 
+// Cards on the list page only show: primary image (column), name, location,
+// city, price, rating + review count (columns), star, a few facility icons.
+// They do NOT touch the gallery, individual reviews or nearby-places — so
+// we strip those from the listing include. This shaves the listing payload
+// dramatically (a populated hotel can have 20+ gallery rows + N reviews).
+const listInclude = () => [
+  { model: Location, as: 'location' },
+  { model: City, as: 'city' },
+  { model: Facility, as: 'facilities', through: { attributes: [] } },
+];
+
 // ─── Public ───────────────────────────────────────────────────────────────
 
 // GET /api/hotels   (public — listing with filters)
@@ -138,7 +149,7 @@ const listPublic = asyncHandler(async (req, res) => {
   const rows = ids.length
     ? await Hotel.findAll({
         where: { id: { [Op.in]: ids } },
-        include: baseInclude(),
+        include: listInclude(),
         order,
       })
     : [];
@@ -151,6 +162,26 @@ const listPublic = asyncHandler(async (req, res) => {
       total: count,
       pages: Math.ceil(count / parseInt(limit, 10)),
     },
+  });
+});
+
+// GET /api/hotels/price-stats  (public — tiny aggregate, no JOINs)
+//
+// Returns {min, max} of `priceFrom` across active hotels. Replaces the old
+// "fetch limit:200 items just to discover the price ceiling" pattern that
+// was costing 7–13 s per page load.
+const priceStats = asyncHandler(async (req, res) => {
+  const row = await Hotel.findOne({
+    where: { isActive: true },
+    attributes: [
+      [sequelize.fn('MIN', sequelize.col('priceFrom')), 'min'],
+      [sequelize.fn('MAX', sequelize.col('priceFrom')), 'max'],
+    ],
+    raw: true,
+  });
+  return ok(res, {
+    min: Number(row?.min) || 0,
+    max: Number(row?.max) || 0,
   });
 });
 
@@ -432,6 +463,7 @@ const removeGalleryImage = asyncHandler(async (req, res) => {
 
 module.exports = {
   listPublic,
+  priceStats,
   getBySlug,
   listAdmin,
   getAdminOne,

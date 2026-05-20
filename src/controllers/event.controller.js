@@ -47,6 +47,14 @@ const baseInclude = (publicOnly = false) => [
     : { model: Review, as: 'reviews', separate: true, order: [['createdAt', 'DESC']] },
 ];
 
+// Slim include for the listing — EventCard only reads columns + the
+// eventType and location relations. Gallery and reviews are detail-page
+// concerns; skipping them cuts the payload roughly in half.
+const listInclude = () => [
+  { model: EventType, as: 'eventType' },
+  { model: Location, as: 'location' },
+];
+
 // ─── Public ───────────────────────────────────────────────────────────────
 
 // GET /api/events
@@ -55,6 +63,7 @@ const listPublic = asyncHandler(async (req, res) => {
     location, eventType, search,
     fromDate, toDate,
     fromTime, toTime,
+    minPrice, maxPrice,
     featured,
     sort,
     page = 1, limit = 12,
@@ -70,6 +79,8 @@ const listPublic = asyncHandler(async (req, res) => {
   }
   if (fromTime) where.startTime = { ...(where.startTime || {}), [Op.gte]: fromTime };
   if (toTime) where.endTime = { ...(where.endTime || {}), [Op.lte]: toTime };
+  if (minPrice) where.price = { ...(where.price || {}), [Op.gte]: parseFloat(minPrice) };
+  if (maxPrice) where.price = { ...(where.price || {}), [Op.lte]: parseFloat(maxPrice) };
   if (search) {
     where[Op.or] = [
       { name: { [Op.like]: `%${search}%` } },
@@ -101,7 +112,7 @@ const listPublic = asyncHandler(async (req, res) => {
   const rows = ids.length
     ? await Event.findAll({
         where: { id: { [Op.in]: ids } },
-        include: baseInclude(),
+        include: listInclude(),
         order,
       })
     : [];
@@ -114,6 +125,22 @@ const listPublic = asyncHandler(async (req, res) => {
       total: count,
       pages: Math.ceil(count / parseInt(limit, 10)),
     },
+  });
+});
+
+// GET /api/events/price-stats  (public — tiny aggregate, no JOINs)
+const priceStats = asyncHandler(async (req, res) => {
+  const row = await Event.findOne({
+    where: { isActive: true },
+    attributes: [
+      [sequelize.fn('MIN', sequelize.col('price')), 'min'],
+      [sequelize.fn('MAX', sequelize.col('price')), 'max'],
+    ],
+    raw: true,
+  });
+  return ok(res, {
+    min: Number(row?.min) || 0,
+    max: Number(row?.max) || 0,
   });
 });
 
@@ -403,7 +430,7 @@ const bookSlot = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  listPublic, getBySlug,
+  listPublic, priceStats, getBySlug,
   listAdmin, getAdminOne,
   createEvent, updateEvent, duplicateEvent, toggle, reorder, removeEvent,
   removeGalleryImage,

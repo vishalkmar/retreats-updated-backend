@@ -84,65 +84,71 @@ const syncWithRetry = async (opts, attempts = 5) => {
   }
 };
 
-const start = async () => {
-  await connectDB();
-
-  const skipSync = process.env.SKIP_SYNC === 'true';
-  if (!skipSync) {
-    // Prune duplicate indexes before syncing — this is one-time cleanup of
-    // any leftover `slug`, `slug_2`, … unique indexes from older schema
-    // definitions. With the named-index model definitions now in place,
-    // subsequent runs find nothing to drop and stay silent.
+/**
+ * Heavy DB work — runs in the background AFTER the HTTP server is already
+ * listening so the first API call doesn't have to wait for `ALTER TABLE` ×40.
+ * If any step fails it logs and continues; the server is already serving.
+ */
+const runBackgroundDbWork = async () => {
+  try {
     const dropped = await pruneDuplicateIndexes();
     if (dropped > 0) {
       console.log(`[DB] Cleaned up ${dropped} stale duplicate index${dropped > 1 ? 'es' : ''}`);
     }
+  } catch (err) {
+    console.warn('[DB] Index prune failed (non-fatal):', err.message);
+  }
 
+  try {
     const syncOpts = process.env.NODE_ENV === 'production' ? {} : { alter: true };
     await syncWithRetry(syncOpts);
     console.log('[DB] Models synchronized');
-
-    // One-time data migrations run after sync. Each one is responsible for
-    // skipping itself on subsequent boots — `migrateReviews` checks whether
-    // the unified `reviews` table already has package rows before copying.
-    try {
-      const { migrate: migrateReviews } = require('./scripts/migrateReviews');
-      const result = await migrateReviews();
-      if (result.copied) {
-        console.log(`[DB] Migrated ${result.copied} legacy package_reviews row(s) into unified reviews table`);
-      }
-    } catch (err) {
-      console.warn('[DB] Review migration failed (non-fatal):', err.message);
-    }
-
-    // Seed default audit-checklist items if the table is empty. Re-runs are
-    // no-ops because the seeder checks count first.
-    try {
-      const { seed: seedChecklist } = require('./scripts/seedChecklist');
-      const result = await seedChecklist();
-      if (result.inserted) {
-        console.log(`[DB] Seeded ${result.inserted} default checklist item(s)`);
-      }
-    } catch (err) {
-      console.warn('[DB] Checklist seed failed (non-fatal):', err.message);
-    }
-
-    // Ensure the 4 Featured Retreats tab rows exist for admin editing
-    try {
-      const { seed: seedFeaturedTabs } = require('./scripts/seedFeaturedTabs');
-      const result = await seedFeaturedTabs();
-      if (result.inserted) {
-        console.log(`[DB] Seeded ${result.inserted} featured tab row(s)`);
-      }
-    } catch (err) {
-      console.warn('[DB] Featured tabs seed failed (non-fatal):', err.message);
-    }
-  } else {
-    console.log('[DB] Skipping sequelize.sync (SKIP_SYNC=true)');
+  } catch (err) {
+    console.error('[DB] sync failed:', err.message);
   }
 
-  // Wrap express in a node http server so we can attach Socket.io for the
-  // PWA real-time review loop without touching the website request path.
+  // One-time data migrations run after sync. Each is idempotent.
+  try {
+    const { migrate: migrateReviews } = require('./scripts/migrateReviews');
+    const result = await migrateReviews();
+    if (result.copied) {
+      console.log(`[DB] Migrated ${result.copied} legacy package_reviews row(s) into unified reviews table`);
+    }
+  } catch (err) {
+    console.warn('[DB] Review migration failed (non-fatal):', err.message);
+  }
+
+  try {
+    const { seed: seedChecklist } = require('./scripts/seedChecklist');
+    const result = await seedChecklist();
+    if (result.inserted) {
+      console.log(`[DB] Seeded ${result.inserted} default checklist item(s)`);
+    }
+  } catch (err) {
+    console.warn('[DB] Checklist seed failed (non-fatal):', err.message);
+  }
+
+  try {
+    const { seed: seedFeaturedTabs } = require('./scripts/seedFeaturedTabs');
+    const result = await seedFeaturedTabs();
+    if (result.inserted) {
+      console.log(`[DB] Seeded ${result.inserted} featured tab row(s)`);
+    }
+  } catch (err) {
+    console.warn('[DB] Featured tabs seed failed (non-fatal):', err.message);
+  }
+
+  console.log('[DB] Background tasks complete — schema fully synced');
+};
+
+const start = async () => {
+  // 1) Only the bare minimum before listen: a working DB connection.
+  await connectDB();
+
+  // 2) Listen IMMEDIATELY. The previous version blocked here for several
+  //    minutes while `sync({alter:true})` rewrote every table on each boot.
+  //    APIs now respond in < 1s after the process starts; schema sync runs
+  //    in the background.
   const httpServer = http.createServer(app);
   initSocket(httpServer);
 
@@ -151,6 +157,19 @@ const start = async () => {
     console.log(`[SERVER] API base: http://localhost:${PORT}/api`);
     console.log(`[SERVER] PWA API base: http://localhost:${PORT}/api/pwa`);
     console.log('[SERVER] Socket.io initialized');
+    console.log('[SERVER] READY — accepting requests');
+  });
+
+  // 3) Schema sync, migrations and seeds — defer so the first request
+  //    isn't blocked. Skip entirely with SKIP_SYNC=true.
+  if (process.env.SKIP_SYNC === 'true') {
+    console.log('[DB] Skipping sequelize.sync (SKIP_SYNC=true)');
+    return;
+  }
+  setImmediate(() => {
+    runBackgroundDbWork().catch((err) => {
+      console.error('[DB] Background DB work crashed:', err);
+    });
   });
 };
 

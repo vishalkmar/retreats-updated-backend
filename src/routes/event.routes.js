@@ -12,6 +12,7 @@ const eventUpload = upload.fields([
 
 // Public
 router.get('/', ctrl.listPublic);
+router.get('/price-stats', ctrl.priceStats); // must be before /:slug
 
 // Admin
 router.get('/admin/all', authenticate, ctrl.listAdmin);
