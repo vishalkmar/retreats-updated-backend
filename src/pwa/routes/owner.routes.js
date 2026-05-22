@@ -14,4 +14,8 @@ router.get('/properties', ctrl.listMyProperties);
 router.get('/properties/:code', ctrl.getOneByCode);
 router.post('/properties/:code/sign-upload', upload.single('signed'), ctrl.uploadSignedContract);
 
+// Check-Availability leads
+router.get('/leads', ctrl.listMyLeads);
+router.post('/leads/:leadId/respond', ctrl.respondToLead);
+
 module.exports = router;

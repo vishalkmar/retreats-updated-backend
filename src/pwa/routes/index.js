@@ -9,6 +9,7 @@ router.use('/admin', require('./admin.routes'));
 router.use('/auditor', require('./auditor.routes'));
 router.use('/officer', require('./officer.routes'));
 router.use('/owner', require('./owner.routes'));
+router.use('/salesperson', require('./salesperson.routes'));
 
 router.get('/health', (req, res) =>
   res.json({ success: true, message: 'PWA API healthy', ts: new Date().toISOString() })

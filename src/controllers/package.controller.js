@@ -374,6 +374,12 @@ const createPackage = asyncHandler(async (req, res) => {
         hostName: body.hostName || null,
         hostBio: body.hostBio || null,
         hostImage: hostImageFile ? buildUrl(hostImageFile) : null,
+        // PWA Check-Availability assignment
+        pwaOwnerId:       body.pwaOwnerId ? parseInt(body.pwaOwnerId, 10) : null,
+        pwaSalespersonId: body.pwaSalespersonId ? parseInt(body.pwaSalespersonId, 10) : null,
+        ownerContactName:  body.ownerContactName  || null,
+        ownerContactEmail: body.ownerContactEmail || null,
+        ownerContactPhone: body.ownerContactPhone || null,
         metaTitle: body.metaTitle || null,
         metaDescription: body.metaDescription || null,
         sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
@@ -444,6 +450,7 @@ const updatePackage = asyncHandler(async (req, res) => {
     'termsConditions', 'refundsPolicy', 'cancellationPolicy', 'bookingTerms',
     'retreatExperience', 'whatMakesSpecial', 'fullProgramTiming',
     'food', 'benefits',
+    'ownerContactName', 'ownerContactEmail', 'ownerContactPhone',
   ];
   directFields.forEach((f) => {
     if (body[f] !== undefined) pkg[f] = body[f] === '' ? null : body[f];
@@ -452,6 +459,13 @@ const updatePackage = asyncHandler(async (req, res) => {
   const intFields = ['cityId', 'locationId', 'durationDays', 'durationNights', 'minGroupSize', 'maxGroupSize', 'sortOrder'];
   intFields.forEach((f) => {
     if (body[f] !== undefined && body[f] !== '') pkg[f] = parseInt(body[f], 10);
+  });
+
+  // Nullable FK fields — allow explicit clear via empty string.
+  ['pwaOwnerId', 'pwaSalespersonId'].forEach((f) => {
+    if (body[f] !== undefined) {
+      pkg[f] = body[f] === '' || body[f] === null ? null : parseInt(body[f], 10);
+    }
   });
 
   if (body.priceFrom !== undefined && body.priceFrom !== '') pkg.priceFrom = parseFloat(body.priceFrom);
@@ -624,6 +638,93 @@ const removeGalleryImage = asyncHandler(async (req, res) => {
   return ok(res, {}, 'Image removed');
 });
 
+// POST /api/packages/:id/check-availability  (public)
+//
+// Creates an AvailabilityLead, fires dummy voice calls to both the assigned
+// owner and salesperson, and lets the PWA dashboards pick it up.
+const submitAvailabilityRequest = asyncHandler(async (req, res) => {
+  const { AvailabilityLead, Salesperson, PropertyOwner } = require('../models');
+  const { placeCall } = require('../pwa/services/voiceCall');
+
+  const pkg = await Package.findByPk(req.params.id);
+  if (!pkg) return fail(res, 'Package not found', 404);
+  if (!pkg.isActive) return fail(res, 'Package is not available', 400);
+
+  const { customerName, customerPhone, customerEmail, requestedDate, notes } = req.body;
+  if (!customerName?.trim()) return fail(res, 'Name is required', 400);
+  if (!customerPhone?.trim()) return fail(res, 'Phone is required', 400);
+  if (!requestedDate) return fail(res, 'Date is required', 400);
+
+  const lead = await AvailabilityLead.create({
+    packageId: pkg.id,
+    ownerId: pkg.pwaOwnerId || null,
+    salespersonId: pkg.pwaSalespersonId || null,
+    customerName: customerName.trim(),
+    customerPhone: customerPhone.trim(),
+    customerEmail: customerEmail?.trim() || null,
+    requestedDate,
+    notes: notes?.trim() || null,
+    status: 'pending',
+  });
+
+  // Resolve phone numbers — prefer the linked user record, fall back to the
+  // contact details snapshot stored on the Package.
+  let ownerPhone = pkg.ownerContactPhone;
+  let ownerName  = pkg.ownerContactName;
+  if (pkg.pwaOwnerId) {
+    const owner = await PropertyOwner.findByPk(pkg.pwaOwnerId);
+    if (owner) {
+      ownerPhone = owner.phone || ownerPhone;
+      ownerName  = owner.name  || ownerName;
+    }
+  }
+  let salesPhone = null;
+  let salesName  = null;
+  if (pkg.pwaSalespersonId) {
+    const sp = await Salesperson.findByPk(pkg.pwaSalespersonId);
+    if (sp) {
+      salesPhone = sp.phone;
+      salesName  = sp.name;
+    }
+  }
+
+  // Fire-and-forget the two voice calls. Don't block the response on these.
+  if (ownerPhone) {
+    placeCall({
+      leadId: lead.id,
+      recipientRole: 'owner',
+      recipientPhone: ownerPhone,
+      recipientName: ownerName,
+      packageName: pkg.name,
+      leadCustomerName: lead.customerName,
+      leadDate: lead.requestedDate,
+    }).then(() => AvailabilityLead.update(
+      { ownerCallQueuedAt: new Date() },
+      { where: { id: lead.id } },
+    )).catch(() => {});
+  }
+  if (salesPhone) {
+    placeCall({
+      leadId: lead.id,
+      recipientRole: 'salesperson',
+      recipientPhone: salesPhone,
+      recipientName: salesName,
+      packageName: pkg.name,
+      leadCustomerName: lead.customerName,
+      leadDate: lead.requestedDate,
+    }).then(() => AvailabilityLead.update(
+      { salespersonCallQueuedAt: new Date() },
+      { where: { id: lead.id } },
+    )).catch(() => {});
+  }
+
+  return created(
+    res,
+    { lead },
+    'Got it — our team will confirm availability shortly',
+  );
+});
+
 // POST /api/packages/:id/interested  (public — increment)
 const markInterested = asyncHandler(async (req, res) => {
   const pkg = await Package.findByPk(req.params.id);
@@ -656,6 +757,7 @@ module.exports = {
   removePackage,
   removeGalleryImage,
   markInterested,
+  submitAvailabilityRequest,
   submitReview,
   reorderPackages,
 };

@@ -169,6 +169,21 @@ const Package = sequelize.define(
     hostBio: { type: DataTypes.TEXT, allowNull: true },
     hostImage: { type: DataTypes.STRING(500), allowNull: true },
 
+    // Owner & Salesperson assignment — used by the Check-Availability flow.
+    // pwaOwnerId: FK to pwa_property_owners (the person who confirms / denies
+    // the booking date in the PWA owner dashboard). pwaSalespersonId: FK to
+    // pwa_salespersons (the inside-sales rep who works the lead). Both are
+    // nullable so existing packages without an assignment still work.
+    pwaOwnerId:       { type: DataTypes.INTEGER, allowNull: true },
+    pwaSalespersonId: { type: DataTypes.INTEGER, allowNull: true },
+
+    // Direct contact details for the owner (used to fire the dummy voice
+    // call). Mirror of PropertyOwner.email/phone so we don't have to JOIN on
+    // every lead submission.
+    ownerContactName:  { type: DataTypes.STRING(160), allowNull: true },
+    ownerContactEmail: { type: DataTypes.STRING(180), allowNull: true },
+    ownerContactPhone: { type: DataTypes.STRING(30),  allowNull: true },
+
     // SEO
     metaTitle: { type: DataTypes.STRING(255), allowNull: true },
     metaDescription: { type: DataTypes.STRING(500), allowNull: true },

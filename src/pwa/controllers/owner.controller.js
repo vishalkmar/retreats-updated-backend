@@ -1,11 +1,15 @@
 const asyncHandler = require('express-async-handler');
+const { Op } = require('sequelize');
 const {
   Property,
   PropertyField,
   Contract,
   Auditor,
   Officer,
+  AvailabilityLead,
+  Salesperson,
 } = require('../models');
+const { Package } = require('../../models');
 const { ok, fail } = require('../../utils/response');
 const { getUploadedUrl } = require('../../utils/uploads');
 const { emitToProperty } = require('../services/socket');
@@ -13,17 +17,27 @@ const { sendSignedContractNotification } = require('../services/mailer');
 const { PROPERTY_STATUS } = require('../constants');
 
 // Owners are only allowed to see the properties registered against their
-// email address — and only once those properties are at the contract-sent
-// stage or beyond.
+// email address — and only AFTER the auditor has released the contract
+// (contract.sentAt is set). Until then the contract is still "with the
+// auditor" and the owner shouldn't see it in their dashboard.
 
 const visiblePropertiesWhere = (req) => ({
   ownerEmail: req.pwaUser.email,
   status: [
-    PROPERTY_STATUS.APPROVED,
     PROPERTY_STATUS.CONTRACT_SENT,
     PROPERTY_STATUS.CONTRACT_SIGNED,
     PROPERTY_STATUS.COMPLETED,
   ],
+});
+
+// Adds a JOIN guard so a property still in 'approved' status (contract
+// generated but not yet released by the auditor) doesn't leak out. We use
+// `required: true` + `where: { sentAt IS NOT NULL }` on the Contract join.
+const releasedContractInclude = () => ({
+  model: Contract,
+  as: 'contract',
+  required: true,
+  where: { sentAt: { [Op.ne]: null } },
 });
 
 const listMyProperties = asyncHandler(async (req, res) => {
@@ -31,7 +45,7 @@ const listMyProperties = asyncHandler(async (req, res) => {
     where: visiblePropertiesWhere(req),
     include: [
       { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email', 'phone', 'profilePhotoUrl'] },
-      { model: Contract, as: 'contract' },
+      releasedContractInclude(),
     ],
     order: [['updatedAt', 'DESC']],
   });
@@ -44,7 +58,7 @@ const getOneByCode = asyncHandler(async (req, res) => {
     include: [
       { model: PropertyField, as: 'fields' },
       { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email', 'phone', 'profilePhotoUrl'] },
-      { model: Contract, as: 'contract' },
+      releasedContractInclude(),
     ],
   });
   if (!property) return fail(res, 'Property not found or not yet ready', 404);
@@ -100,8 +114,47 @@ const uploadSignedContract = asyncHandler(async (req, res) => {
   return ok(res, { contract, property }, 'Signed contract uploaded');
 });
 
+// -- Availability lead endpoints (Check-Availability flow) ---------------
+
+const leadInclude = () => [
+  { model: Package, as: 'package', attributes: ['id', 'name', 'slug', 'primaryImage', 'priceFrom', 'currency', 'durationDays', 'durationNights'] },
+  { model: Salesperson, as: 'salesperson', attributes: ['id', 'name', 'email', 'phone', 'profilePhotoUrl'] },
+];
+
+const listMyLeads = asyncHandler(async (req, res) => {
+  const items = await AvailabilityLead.findAll({
+    where: { ownerId: req.pwaUser.id },
+    include: leadInclude(),
+    order: [['createdAt', 'DESC']],
+  });
+  return ok(res, { items });
+});
+
+const respondToLead = asyncHandler(async (req, res) => {
+  const { decision, note } = req.body;
+  if (!['yes', 'no'].includes(decision)) return fail(res, 'decision must be yes or no', 400);
+
+  const lead = await AvailabilityLead.findOne({
+    where: { id: req.params.leadId, ownerId: req.pwaUser.id },
+  });
+  if (!lead) return fail(res, 'Lead not found', 404);
+  if (lead.status !== 'pending') {
+    return fail(res, `Lead already responded to (${lead.status})`, 400);
+  }
+
+  lead.status = decision === 'yes' ? 'owner_yes' : 'owner_no';
+  lead.ownerRespondedAt = new Date();
+  lead.ownerNote = note?.trim() || null;
+  await lead.save();
+
+  const fresh = await AvailabilityLead.findByPk(lead.id, { include: leadInclude() });
+  return ok(res, { lead: fresh }, `Marked as ${decision === 'yes' ? 'available' : 'not available'}`);
+});
+
 module.exports = {
   listMyProperties,
   getOneByCode,
   uploadSignedContract,
+  listMyLeads,
+  respondToLead,
 };

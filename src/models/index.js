@@ -38,6 +38,12 @@ const TestimonialMedia = require('./testimonialMedia.model');
 const Blog = require('./blog.model');
 const BlogCategory = require('./blogCategory.model');
 const BlogScene = require('./blogScene.model');
+const User = require('./user.model');
+const UserOtpToken = require('./userOtpToken.model');
+const WishlistItem = require('./wishlistItem.model');
+const Booking = require('./booking.model');
+const WalletTransaction = require('./walletTransaction.model');
+const Coupon = require('./coupon.model');
 
 const db = {
   sequelize,
@@ -80,7 +86,36 @@ const db = {
   Blog,
   BlogCategory,
   BlogScene,
+  User,
+  UserOtpToken,
+  WishlistItem,
+  Booking,
+  WalletTransaction,
+  Coupon,
 };
+
+// ─── Users: self-reference for referrals ──────────────────────────────────
+User.belongsTo(User, { foreignKey: 'referredByUserId', as: 'referrer' });
+User.hasMany(User, { foreignKey: 'referredByUserId', as: 'referees' });
+
+// ─── Wishlist: belongs to a User, polymorphic to the bookable entity ──────
+// We don't add hasMany on Package/Room/Event/AddOnActivity because Sequelize
+// can't disambiguate polymorphic FKs cleanly — the wishlist controller does
+// the manual hydration instead (matches the Review pattern in this codebase).
+User.hasMany(WishlistItem, { foreignKey: 'userId', as: 'wishlistItems', onDelete: 'CASCADE' });
+WishlistItem.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// ─── Bookings: belong to a User, polymorphic to the bookable entity ───────
+User.hasMany(Booking, { foreignKey: 'userId', as: 'bookings' });
+Booking.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// ─── Wallet transactions ──────────────────────────────────────────────────
+User.hasMany(WalletTransaction, { foreignKey: 'userId', as: 'walletTransactions', onDelete: 'CASCADE' });
+WalletTransaction.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// ─── Coupons (personal coupons belong to a user; public coupons have userId=null) ─
+User.hasMany(Coupon, { foreignKey: 'userId', as: 'coupons', onDelete: 'CASCADE' });
+Coupon.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 // Associations
 Hero.hasMany(HeroMedia, { foreignKey: 'heroId', as: 'media', onDelete: 'CASCADE' });

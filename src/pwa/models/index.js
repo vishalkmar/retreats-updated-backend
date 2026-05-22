@@ -11,6 +11,11 @@ const PropertyField = require('./propertyField.model');
 const FieldReview = require('./fieldReview.model');
 const Message = require('./message.model');
 const Contract = require('./contract.model');
+const ListingImage = require('./listingImage.model');
+const Salesperson = require('./salesperson.model');
+const AvailabilityLead = require('./availabilityLead.model');
+const VoiceCallLog = require('./voiceCallLog.model');
+const PropertyPhase4Data = require('./propertyPhase4Data.model');
 
 // Property <-> Auditor
 Property.belongsTo(Auditor, { foreignKey: 'auditorId', as: 'auditor' });
@@ -40,6 +45,33 @@ Message.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
 Property.hasOne(Contract, { foreignKey: 'propertyId', as: 'contract', onDelete: 'CASCADE' });
 Contract.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
 
+// Property <-> Listing Images (1:many)
+Property.hasMany(ListingImage, { foreignKey: 'propertyId', as: 'listingImages', onDelete: 'CASCADE' });
+ListingImage.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
+
+// ListingImage <-> Auditor
+Auditor.hasMany(ListingImage, { foreignKey: 'auditorId', as: 'listingImages' });
+ListingImage.belongsTo(Auditor, { foreignKey: 'auditorId', as: 'auditor' });
+
+// AvailabilityLead <-> PropertyOwner & Salesperson
+PropertyOwner.hasMany(AvailabilityLead, { foreignKey: 'ownerId', as: 'leads' });
+AvailabilityLead.belongsTo(PropertyOwner, { foreignKey: 'ownerId', as: 'owner' });
+
+Salesperson.hasMany(AvailabilityLead, { foreignKey: 'salespersonId', as: 'leads' });
+AvailabilityLead.belongsTo(Salesperson, { foreignKey: 'salespersonId', as: 'salesperson' });
+
+// Lead re-request chain — self-referencing
+AvailabilityLead.hasMany(AvailabilityLead, { foreignKey: 'parentLeadId', as: 'followUps' });
+AvailabilityLead.belongsTo(AvailabilityLead, { foreignKey: 'parentLeadId', as: 'parent' });
+
+// VoiceCallLog <-> AvailabilityLead
+AvailabilityLead.hasMany(VoiceCallLog, { foreignKey: 'leadId', as: 'voiceCalls', onDelete: 'CASCADE' });
+VoiceCallLog.belongsTo(AvailabilityLead, { foreignKey: 'leadId', as: 'lead' });
+
+// Phase 4 data <-> Property
+Property.hasMany(PropertyPhase4Data, { foreignKey: 'propertyId', as: 'phase4', onDelete: 'CASCADE' });
+PropertyPhase4Data.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
+
 module.exports = {
   Auditor,
   Officer,
@@ -50,4 +82,9 @@ module.exports = {
   FieldReview,
   Message,
   Contract,
+  ListingImage,
+  Salesperson,
+  AvailabilityLead,
+  VoiceCallLog,
+  PropertyPhase4Data,
 };

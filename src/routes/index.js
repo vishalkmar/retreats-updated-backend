@@ -1,6 +1,12 @@
 const router = require('express').Router();
 
 router.use('/auth', require('./auth.routes'));
+router.use('/user-auth', require('./userAuth.routes'));
+router.use('/wishlist', require('./wishlist.routes'));
+router.use('/bookings', require('./booking.routes'));
+router.use('/payments', require('./payment.routes'));
+router.use('/refer-earn', require('./referEarn.routes'));
+router.use('/admin/bookings', require('./adminBooking.routes'));
 router.use('/heroes', require('./hero.routes'));
 router.use('/header-links', require('./headerLink.routes'));
 router.use('/theme', require('./theme.routes'));

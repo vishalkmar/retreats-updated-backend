@@ -28,4 +28,22 @@ router.post('/officers/:id/reset-password', ctrl.resetOfficerPassword);
 router.get('/signed-properties', ctrl.listSignedProperties);
 router.get('/signed-properties/:id/download', ctrl.downloadSignedProperty);
 
+// Final listing images (read-only viewer)
+router.get('/listing-images', ctrl.listPropertiesWithListingImages);
+router.get('/listing-images/:propertyId', ctrl.getListingImagesForProperty);
+
+// Salespersons
+router.get('/salespersons', ctrl.listSalespersons);
+router.post('/salespersons', upload.single('profilePhoto'), ctrl.createSalesperson);
+router.get('/salespersons/:id', ctrl.getSalesperson);
+router.put('/salespersons/:id', upload.single('profilePhoto'), ctrl.updateSalesperson);
+router.patch('/salespersons/:id/toggle', ctrl.toggleSalesperson);
+router.post('/salespersons/:id/reset-password', ctrl.resetSalespersonPassword);
+
+// All availability leads (admin overview)
+router.get('/leads', ctrl.listAllLeads);
+
+// Property owners lookup (used by package admin form)
+router.get('/owners', ctrl.listOwners);
+
 module.exports = router;

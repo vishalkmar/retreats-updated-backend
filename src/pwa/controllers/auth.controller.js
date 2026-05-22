@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const { Auditor, Officer, PropertyOwner, Property } = require('../models');
+const { Auditor, Officer, PropertyOwner, Property, Salesperson } = require('../models');
 const { signToken } = require('../../utils/jwt');
 const { ok, fail } = require('../../utils/response');
 const { issueOtp, verifyOtp } = require('../services/otp');
@@ -8,8 +8,11 @@ const { sendOtp } = require('../services/mailer');
 const findUserByRole = async (role, email) => {
   if (role === 'auditor') return Auditor.findOne({ where: { email } });
   if (role === 'officer') return Officer.findOne({ where: { email } });
+  if (role === 'salesperson') return Salesperson.findOne({ where: { email } });
   return null;
 };
+
+const PASSWORD_LOGIN_ROLES = ['auditor', 'officer', 'salesperson'];
 
 const issuePwaToken = (role, id) =>
   signToken({ pwa: true, role, id });
@@ -18,7 +21,7 @@ const issuePwaToken = (role, id) =>
 
 const login = asyncHandler(async (req, res) => {
   const { role, email, password } = req.body;
-  if (!['auditor', 'officer'].includes(role)) return fail(res, 'Invalid role', 400);
+  if (!PASSWORD_LOGIN_ROLES.includes(role)) return fail(res, 'Invalid role', 400);
   if (!email || !password) return fail(res, 'Email and password are required', 400);
 
   const normalized = email.toLowerCase().trim();
@@ -56,7 +59,7 @@ const login = asyncHandler(async (req, res) => {
 // a real session token.
 const verifyLoginOtp = asyncHandler(async (req, res) => {
   const { role, email, code } = req.body;
-  if (!['auditor', 'officer'].includes(role)) return fail(res, 'Invalid role', 400);
+  if (!PASSWORD_LOGIN_ROLES.includes(role)) return fail(res, 'Invalid role', 400);
   if (!email || !code) return fail(res, 'Email and code are required', 400);
 
   const normalized = email.toLowerCase().trim();
@@ -80,7 +83,7 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
 
 const resendOtp = asyncHandler(async (req, res) => {
   const { role, email, purpose = 'signup_verify' } = req.body;
-  if (!['auditor', 'officer'].includes(role)) return fail(res, 'Invalid role', 400);
+  if (!PASSWORD_LOGIN_ROLES.includes(role)) return fail(res, 'Invalid role', 400);
   if (!email) return fail(res, 'Email is required', 400);
   const normalized = email.toLowerCase().trim();
   const user = await findUserByRole(role, normalized);
@@ -108,7 +111,10 @@ const ownerRequestOtp = asyncHandler(async (req, res) => {
   if (property.ownerEmail.toLowerCase().trim() !== normalized) {
     return fail(res, 'This email is not on file for that Property ID', 403);
   }
-  if (!['approved', 'contract_sent', 'contract_signed', 'completed'].includes(property.status)) {
+  // Owner login is only unlocked AFTER the auditor releases the contract —
+  // i.e. status moved past `approved`. While the contract sits with the
+  // auditor (status === 'approved'), the owner can't sign in yet.
+  if (!['contract_sent', 'contract_signed', 'completed'].includes(property.status)) {
     return fail(res, 'Owner access is not yet enabled for this property', 403);
   }
 

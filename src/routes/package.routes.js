@@ -15,6 +15,7 @@ const packageUpload = upload.fields([
 router.get('/', ctrl.listPublic);
 router.get('/price-stats', ctrl.priceStats); // must be before /:slug
 router.post('/:id/interested', ctrl.markInterested);
+router.post('/:id/check-availability', ctrl.submitAvailabilityRequest);
 // Legacy review-submission alias (forwards into the unified /api/reviews flow)
 router.post('/:id/reviews', ctrl.submitReview);
 

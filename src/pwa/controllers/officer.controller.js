@@ -12,6 +12,7 @@ const { ok, fail } = require('../../utils/response');
 const { emitToProperty } = require('../services/socket');
 const { sendContract } = require('../services/mailer');
 const { generateContractPdf } = require('../services/contractPdf');
+const { uploadContractPdf } = require('../services/contractStorage');
 const { SECTION_KEY_SET, PROPERTY_STATUS, FIELD_DECISION } = require('../constants');
 
 // All routes here use authenticatePwa + requireRoles('officer') in the
@@ -29,7 +30,10 @@ const propertyInclude = () => [
 const visibilityFilter = (officerId) => ({
   [Op.or]: [
     { assignedOfficerId: officerId },
-    { assignedOfficerId: null, status: PROPERTY_STATUS.PHASE3_SUBMITTED },
+    {
+      assignedOfficerId: null,
+      status: [PROPERTY_STATUS.PHASE3_SUBMITTED, PROPERTY_STATUS.PHASE4_SUBMITTED],
+    },
   ],
 });
 
@@ -42,8 +46,11 @@ const listProperties = asyncHandler(async (req, res) => {
   let where = { ...visibilityFilter(officerId) };
   if (tab === 'new') {
     where.status = [PROPERTY_STATUS.PHASE3_SUBMITTED, PROPERTY_STATUS.IN_REVIEW];
+  } else if (tab === 'phase4') {
+    // Phase 4 deep-dive submissions awaiting officer review.
+    where.status = [PROPERTY_STATUS.PHASE4_SUBMITTED];
   } else if (tab === 'follow-up') {
-    where.status = [PROPERTY_STATUS.IN_REVISION];
+    where.status = [PROPERTY_STATUS.IN_REVISION, PROPERTY_STATUS.PHASE4_IN_REVISION];
     where.assignedOfficerId = officerId; // only mine
   } else if (tab === 'rejected') {
     where.status = [PROPERTY_STATUS.REJECTED];
@@ -51,6 +58,9 @@ const listProperties = asyncHandler(async (req, res) => {
   } else if (tab === 'approved') {
     where.status = [
       PROPERTY_STATUS.APPROVED,
+      PROPERTY_STATUS.PHASE4_SUBMITTED,
+      PROPERTY_STATUS.PHASE4_IN_REVISION,
+      PROPERTY_STATUS.FINAL_APPROVED,
       PROPERTY_STATUS.CONTRACT_SENT,
       PROPERTY_STATUS.CONTRACT_SIGNED,
       PROPERTY_STATUS.COMPLETED,
@@ -205,7 +215,13 @@ const followUpProperty = asyncHandler(async (req, res) => {
   return ok(res, { property }, 'Moved to follow-up');
 });
 
-// --- Final approve (generates contract + emails owner) -----------------
+// --- Phase 3 approve (semi-approved; awaits Phase 4 deep-dive) ---------
+//
+// What used to be the "Final approve" step is now Phase 3 approve only.
+// It just locks in Phase 3 — no contract PDF is generated here. The
+// auditor must complete Phase 4 deep-dive before the officer's final
+// approval (which actually triggers the contract). This means the
+// `approved` status is conceptually "semi-approved".
 
 const approveProperty = asyncHandler(async (req, res) => {
   const property = await Property.findOne({
@@ -226,52 +242,16 @@ const approveProperty = asyncHandler(async (req, res) => {
   property.assignedOfficerId = property.assignedOfficerId || req.pwaUser.id;
   await property.save();
 
-  const officer = await Officer.findByPk(property.assignedOfficerId);
-
-  // Generate PDF + email owner. PDF body lives in memory; we keep a
-  // /uploads-style URL only if you decide to store it later.
-  let pdfBuffer = null;
-  try {
-    pdfBuffer = await generateContractPdf({
-      property,
-      auditor: property.auditor,
-      officerName: officer?.name,
-    });
-  } catch (err) {
-    console.error('[PWA] PDF generation failed:', err);
-  }
-
-  let contract = await Contract.findOne({ where: { propertyId: property.id } });
-  if (!contract) {
-    contract = await Contract.create({ propertyId: property.id });
-  }
-  contract.sentAt = new Date();
-  await contract.save();
-
-  try {
-    if (pdfBuffer) {
-      await sendContract({
-        to: property.ownerEmail,
-        ownerName: property.ownerName,
-        propertyName: property.name,
-        propertyCode: property.propertyCode,
-        pdfBuffer,
-        pdfFilename: `contract-${property.propertyCode}.pdf`,
-      });
-    }
-  } catch (err) {
-    console.warn('[PWA] sendContract failed:', err.message);
-  }
-
-  property.status = PROPERTY_STATUS.CONTRACT_SENT;
-  await property.save();
-
   emitToProperty(property.id, 'property:status', {
     propertyId: property.id,
     status: property.status,
   });
 
-  return ok(res, { property, contract }, 'Approved — contract sent to owner');
+  return ok(
+    res,
+    { property },
+    'Phase 3 approved — waiting on auditor to complete Phase 4 deep-dive',
+  );
 });
 
 // --- Final reject ------------------------------------------------------

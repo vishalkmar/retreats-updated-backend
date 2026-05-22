@@ -43,7 +43,13 @@ const Property = sequelize.define(
         'phase3_submitted',
         'in_review',
         'in_revision',
+        // Phase 3 approved — conceptually "semi-approved". Phase 4 deep-dive
+        // pending before the contract is generated.
         'approved',
+        'phase4_submitted',
+        'phase4_in_revision',
+        // All four phases reviewed and accepted; contract gen happens here.
+        'final_approved',
         'rejected',
         'contract_sent',
         'contract_signed',
@@ -56,8 +62,10 @@ const Property = sequelize.define(
     // Officer outputs
     officerSuggestion: { type: DataTypes.TEXT, allowNull: true },
     rejectedReason: { type: DataTypes.TEXT, allowNull: true },
-    approvedAt: { type: DataTypes.DATE, allowNull: true },
+    approvedAt: { type: DataTypes.DATE, allowNull: true },       // Phase 3 approval
+    finalApprovedAt: { type: DataTypes.DATE, allowNull: true },  // Phase 4 approval
     submittedAt: { type: DataTypes.DATE, allowNull: true },
+    phase4SubmittedAt: { type: DataTypes.DATE, allowNull: true },
   },
   {
     tableName: 'pwa_properties',
