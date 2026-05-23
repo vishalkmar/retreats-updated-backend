@@ -85,8 +85,29 @@ const Booking = sequelize.define(
 
     cancelledAt: { type: DataTypes.DATE, allowNull: true },
     cancellationReason: { type: DataTypes.STRING(255), allowNull: true },
+    // Short machine-readable code so admins can group cancellations
+    // (e.g. plan_change / found_better / emergency / payment_issue / other).
+    cancellationReasonCode: { type: DataTypes.STRING(40), allowNull: true },
+
     refundedAt: { type: DataTypes.DATE, allowNull: true },
     refundAmountPaise: { type: DataTypes.INTEGER, defaultValue: 0 },
+
+    // Lifecycle of the Cashfree refund (independent of the booking status).
+    //   none       = no refund eligible / not yet initiated
+    //   pending    = wallet-only refund in progress (rare race condition)
+    //   processing = Cashfree refund initiated, bank settlement pending
+    //   completed  = Cashfree confirmed refund settled
+    //   failed     = Cashfree rejected the refund (needs admin handling)
+    refundStatus: {
+      type: DataTypes.ENUM('none', 'pending', 'processing', 'completed', 'failed'),
+      defaultValue: 'none',
+    },
+    cashfreeRefundId: { type: DataTypes.STRING(120), allowNull: true },
+    refundRaw: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Last raw Cashfree refund payload — useful for support / reconciliation',
+    },
   },
   {
     tableName: 'bookings',

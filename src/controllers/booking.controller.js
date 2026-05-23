@@ -58,8 +58,11 @@ const publicBooking = (booking) => {
     },
     cancelledAt: j.cancelledAt,
     cancellationReason: j.cancellationReason,
+    cancellationReasonCode: j.cancellationReasonCode,
     refundedAt: j.refundedAt,
     refundAmount: fromPaise(j.refundAmountPaise),
+    refundStatus: j.refundStatus || 'none',
+    cashfreeRefundId: j.cashfreeRefundId,
     createdAt: j.createdAt,
     updatedAt: j.updatedAt,
   };
@@ -309,40 +312,119 @@ const getMineByCode = asyncHandler(async (req, res) => {
   return ok(res, { booking: publicBooking(booking) });
 });
 
-// POST /api/bookings/me/:code/cancel — soft cancel (status flip + reason).
-// Refunds get handled in a later phase when the policy is firmed up; for now
-// we only allow cancelling rows that haven't been paid yet OR that were paid
-// less than the cancellation cutoff (default: scheduledFor minus 1 day).
-const cancelMine = asyncHandler(async (req, res) => {
+// Predefined cancellation reasons — kept in code (not config) so the user
+// always sees the same options regardless of admin tinkering. The "other"
+// option triggers the custom-reason text input in the UI.
+const CANCEL_REASONS = [
+  { code: 'plan_change',     label: 'My plan has changed' },
+  { code: 'found_better',    label: 'Found a better option' },
+  { code: 'price_high',      label: 'The price feels too high' },
+  { code: 'payment_issue',   label: 'I had a payment issue' },
+  { code: 'emergency',       label: 'Personal emergency / illness' },
+  { code: 'travel_restrict', label: 'Travel restrictions / weather' },
+  { code: 'wrong_dates',     label: 'Wrong dates booked by mistake' },
+  { code: 'other',           label: 'Other (please specify)' },
+];
+
+// GET /api/bookings/me/:code/cancel-quote
+// Returns the refund quote + policy so the user can preview "you'll get
+// ₹X back, processed within 5-7 days" BEFORE confirming the cancellation.
+const cancelQuote = asyncHandler(async (req, res) => {
+  const { quoteForBooking } = require('../services/refund.service');
   const booking = await Booking.findOne({
     where: { bookingCode: String(req.params.code), userId: req.user.id },
   });
   if (!booking) return fail(res, 'Booking not found', 404);
-
   if (['cancelled', 'refunded', 'completed'].includes(booking.status)) {
     return fail(res, `Booking is already ${booking.status}`, 400);
   }
 
+  const { policy, quote } = await quoteForBooking(booking);
+  return ok(res, {
+    bookingCode: booking.bookingCode,
+    totalPaid: fromPaise(booking.totalPaise || 0),
+    walletPortion: fromPaise(booking.walletDiscountPaise || 0),
+    isPaid: !!booking.paidAt,
+    policy: {
+      source: policy.source,
+      tiers: policy.tiers,
+      enabled: policy.enabled,
+      processingNote: policy.processingNote,
+      isRefundable: policy.isRefundable !== false,
+    },
+    refund: quote,
+    reasons: CANCEL_REASONS,
+  });
+});
+
+// POST /api/bookings/me/:code/cancel  { reasonCode, reason }
+// Real cancellation: applies the refund policy, hits Cashfree to push the
+// money back to source, restores wallet + coupon, flips status.
+const cancelMine = asyncHandler(async (req, res) => {
+  const { quoteForBooking, executeRefund } = require('../services/refund.service');
+  const booking = await Booking.findOne({
+    where: { bookingCode: String(req.params.code), userId: req.user.id },
+  });
+  if (!booking) return fail(res, 'Booking not found', 404);
+  if (['cancelled', 'refunded', 'completed'].includes(booking.status)) {
+    return fail(res, `Booking is already ${booking.status}`, 400);
+  }
+
+  const reasonCode = String(req.body.reasonCode || 'other').trim().slice(0, 40);
+  const reasonText = req.body.reason ? String(req.body.reason).slice(0, 250) : null;
+  // Resolve the canonical label for storage so the admin UI can show
+  // "Found a better option" not just "found_better".
+  const known = CANCEL_REASONS.find((r) => r.code === reasonCode);
+  const finalReason = reasonText || known?.label || null;
+
+  // Compute the refund quote ONCE, then execute the side effects.
+  const { quote } = await quoteForBooking(booking);
+
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
-  booking.cancellationReason = req.body.reason ? String(req.body.reason).slice(0, 250) : null;
+  booking.cancellationReason = finalReason;
+  booking.cancellationReasonCode = reasonCode;
+  // Set refundStatus to 'pending' optimistically — executeRefund will flip
+  // to processing/completed/failed/none based on what actually happens.
+  booking.refundStatus = 'pending';
   await booking.save();
 
-  // Restore the wallet credit + coupon usage so the user isn't punished for
-  // backing out. Both calls are idempotent so a double-cancel does nothing.
-  if (booking.walletDiscountPaise > 0) {
-    refundWalletForBooking({
-      userId: booking.userId,
-      amountPaise: booking.walletDiscountPaise,
-      bookingId: booking.id,
-    }).catch((err) => console.error('[booking.cancel] wallet refund failed:', err.message));
-  }
+  // Coupon usage restore — always, regardless of refund outcome.
   if (booking.couponCode) {
     restoreCoupon({ code: booking.couponCode })
       .catch((err) => console.error('[booking.cancel] coupon restore failed:', err.message));
   }
 
-  return ok(res, { booking: publicBooking(booking) }, 'Booking cancelled');
+  let refundResult = { kind: 'none', refundStatus: 'none' };
+  if (booking.paidAt && quote.refundAmountPaise > 0) {
+    refundResult = await executeRefund({ booking, quote, reason: finalReason });
+  } else if (!booking.paidAt) {
+    // Never-paid booking → no money to return, but still restore wallet
+    // portion (in case the user partially applied wallet before payment).
+    if (booking.walletDiscountPaise > 0) {
+      refundWalletForBooking({
+        userId: booking.userId,
+        amountPaise: booking.walletDiscountPaise,
+        bookingId: booking.id,
+      }).catch((err) => console.error('[booking.cancel] wallet refund failed:', err.message));
+    }
+    booking.refundStatus = 'none';
+    await booking.save();
+  } else {
+    // Paid but 0% refund tier → reset status to 'none' so the UI doesn't
+    // mis-show a pending refund spinner forever.
+    booking.refundStatus = 'none';
+    await booking.save();
+  }
+
+  // Refresh the booking from DB so the response carries the latest refund
+  // state (executeRefund saved it inside).
+  await booking.reload();
+
+  return ok(res, {
+    booking: publicBooking(booking),
+    refund: { ...quote, result: refundResult },
+  }, 'Booking cancelled');
 });
 
 module.exports = {
@@ -351,5 +433,7 @@ module.exports = {
   listMine,
   getMineByCode,
   cancelMine,
+  cancelQuote,
+  CANCEL_REASONS,
   publicBooking,
 };

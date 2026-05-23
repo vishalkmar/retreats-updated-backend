@@ -136,6 +136,7 @@ const createActivity = asyncHandler(async (req, res) => {
         faqs: parseJsonField(body.faqs, []),
         isFeatured: body.isFeatured === 'true',
         isActive: body.isActive === 'false' ? false : true,
+        isRefundable: body.isRefundable === 'false' ? false : true,
         sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
       },
       { transaction: t }
@@ -193,7 +194,7 @@ const updateActivity = asyncHandler(async (req, res) => {
   if (body.sortOrder !== undefined && body.sortOrder !== '')
     item.sortOrder = parseInt(body.sortOrder, 10);
 
-  ['isFeatured', 'isActive'].forEach((f) => {
+  ['isFeatured', 'isActive', 'isRefundable'].forEach((f) => {
     if (body[f] !== undefined) item[f] = body[f] === 'true' || body[f] === true;
   });
 

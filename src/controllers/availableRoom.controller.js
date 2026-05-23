@@ -158,6 +158,7 @@ const createRoom = asyncHandler(async (req, res) => {
         descriptionRich: body.descriptionRich || null,
         isFeatured: body.isFeatured === 'true',
         isActive: body.isActive === 'false' ? false : true,
+        isRefundable: body.isRefundable === 'false' ? false : true,
         sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
       },
       { transaction: t }
@@ -228,7 +229,7 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (body.sortOrder !== undefined && body.sortOrder !== '')
     room.sortOrder = parseInt(body.sortOrder, 10);
 
-  ['isFeatured', 'isActive'].forEach((f) => {
+  ['isFeatured', 'isActive', 'isRefundable'].forEach((f) => {
     if (body[f] !== undefined) room[f] = body[f] === 'true' || body[f] === true;
   });
 

@@ -32,6 +32,14 @@ const AddOnActivity = sequelize.define(
     // FAQs — JSON array of { question, answer }
     faqs: { type: DataTypes.JSON, defaultValue: [] },
 
+    // Cancellation / refund
+    isRefundable: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    refundPolicyOverride: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Per-item refund tiers — same shape as RefundPolicy.tiers. When null the global policy is used.',
+    },
+
     // Flags
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },

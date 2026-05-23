@@ -117,6 +117,19 @@ const createOrderForBooking = asyncHandler(async (req, res) => {
     }, 'Cashfree order ready');
   } catch (err) {
     console.error('[payment] createOrder failed:', err.message, err.body || '');
+
+    // Surface Cashfree validation errors (bad phone, bad email, etc.) directly
+    // to the user as a 400 so they can fix their profile and retry. Unknown
+    // upstream errors stay as a generic 502 so we don't leak Cashfree internals.
+    if (err.code === 'invalid_phone') {
+      return fail(res, err.message, 400);
+    }
+    if (err.statusCode === 400 && err.body?.code) {
+      // Cashfree returned a structured validation failure. The `message`
+      // field is usually safe to relay to the user.
+      const cfMsg = err.body.message || 'Payment details were rejected by the gateway.';
+      return fail(res, cfMsg, 400);
+    }
     return fail(res, 'Could not initialise payment. Please try again.', 502);
   }
 });

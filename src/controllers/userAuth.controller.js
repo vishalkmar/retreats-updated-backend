@@ -5,7 +5,11 @@ const { signToken } = require('../utils/jwt');
 const { ok, fail, created } = require('../utils/response');
 const { issueOtp, verifyOtp, OTP_TTL_MIN } = require('../services/userOtp.service');
 const { sendUserOtp, sendUserWelcome } = require('../services/userMailer.service');
-const { issueReferralCouponsOnSignup } = require('../services/referEarn.service');
+const { normalizePhone } = require('../services/cashfree.service');
+// NOTE: referral coupons for the referee were removed in the v2 referral
+// rewrite (May 2026). Only the referrer earns now, and that fires from the
+// payment confirmation path (creditReferrerForFirstPaid). Nothing referral-
+// related runs from completeProfile any more.
 
 const normalize = (email) => String(email || '').toLowerCase().trim();
 
@@ -126,8 +130,16 @@ const completeProfile = asyncHandler(async (req, res) => {
   if (!name) return fail(res, 'Name is required', 400);
   if (!phone) return fail(res, 'Phone is required', 400);
 
+  // Reject anything Cashfree won't accept on the booking checkout — catching
+  // this here means the user can never reach the checkout page with a phone
+  // that's destined to fail at the payment gateway.
+  const normalized = normalizePhone(phone);
+  if (!normalized) {
+    return fail(res, 'Please enter a valid 10-digit mobile number (or include the country code).', 400);
+  }
+
   user.name = name;
-  user.phone = phone;
+  user.phone = normalized;
 
   // First-time profile completion — issue a referral code, link the referrer
   // if a valid code was supplied, and capture a handle to the referrer so we
@@ -156,13 +168,10 @@ const completeProfile = asyncHandler(async (req, res) => {
     console.error('[user-auth] Welcome email failed:', err.message);
   });
 
-  // Refer-and-earn signup coupons fire only on the first profile completion
-  // AND only when a valid referrer was attached. Failures are logged but
-  // never block the user — they can still book without the bonus.
-  if (isFirstCompletion && referrerForBonus) {
-    issueReferralCouponsOnSignup({ refereeUser: user, referrerUser: referrerForBonus })
-      .catch((err) => console.error('[user-auth] referral coupons failed:', err.message));
-  }
+  // v2 referral system: nothing to do here. The referrer payout is fired
+  // from the payment confirmation path (see creditReferrerForFirstPaid in
+  // payment.controller.js). `referrerForBonus` was already linked above via
+  // `user.referredByUserId = referrer.id`.
 
   return ok(res, { user: publicUser(user) }, 'Profile saved');
 });
@@ -181,7 +190,17 @@ const updateProfile = asyncHandler(async (req, res) => {
   for (const key of allowed) {
     if (key in req.body) {
       const value = req.body[key];
-      user[key] = value === '' ? null : value;
+      // Phone gets normalized the same way completeProfile does so future
+      // checkouts don't trip Cashfree's phone validator.
+      if (key === 'phone' && value && String(value).trim()) {
+        const normalized = normalizePhone(value);
+        if (!normalized) {
+          return fail(res, 'Please enter a valid 10-digit mobile number (or include the country code).', 400);
+        }
+        user.phone = normalized;
+      } else {
+        user[key] = value === '' ? null : value;
+      }
     }
   }
   await user.save();

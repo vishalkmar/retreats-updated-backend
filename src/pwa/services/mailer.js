@@ -30,6 +30,9 @@ const postBrevoEmail = (payload) =>
         hostname: 'api.brevo.com',
         path: '/v3/smtp/email',
         method: 'POST',
+        // Force IPv4 — Brevo's IP whitelist is per-address and our ISP's
+        // dynamic IPv6 prefix would need re-whitelisting on every reconnect.
+        family: 4,
         headers: {
           accept: 'application/json',
           'api-key': process.env.BREVO_API_KEY,

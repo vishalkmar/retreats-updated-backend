@@ -205,6 +205,7 @@ const createEvent = asyncHandler(async (req, res) => {
       sports: parseJsonField(body.sports, []),
       isFeatured: body.isFeatured === 'true',
       isActive: body.isActive === 'false' ? false : true,
+      isRefundable: body.isRefundable === 'false' ? false : true,
       sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
     }, { transaction: t });
 
@@ -256,7 +257,7 @@ const updateEvent = asyncHandler(async (req, res) => {
   if (body.priceOriginal !== undefined)
     event.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
 
-  ['isFeatured', 'isActive'].forEach((f) => {
+  ['isFeatured', 'isActive', 'isRefundable'].forEach((f) => {
     if (body[f] !== undefined) event[f] = body[f] === 'true' || body[f] === true;
   });
 

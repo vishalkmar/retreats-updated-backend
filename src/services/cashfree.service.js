@@ -78,6 +78,41 @@ const cashfreeRequest = ({ method = 'GET', path, body }) =>
   });
 
 /**
+ * Normalize a phone number to a form Cashfree accepts. Cashfree wants either:
+ *   • Indian 10-digit: "9090407368" or with country code "+919090407368"
+ *   • International with country code: "+16014635923"
+ *
+ * Our DB stores whatever the user typed at signup (often with spaces, dashes,
+ * or a stray leading 0). We clean it here so the booking-create path doesn't
+ * have to know Cashfree's exact rules.
+ *
+ * Returns null if the number can't be salvaged — caller treats that as an
+ * invalid phone and surfaces a friendly error to the user.
+ */
+const normalizePhone = (raw) => {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  // Preserve a leading + if present; otherwise strip everything except digits.
+  const hasPlus = s.startsWith('+');
+  const digits = s.replace(/[^\d]/g, '');
+  if (!digits) return null;
+
+  if (hasPlus) {
+    // International number — must be at least 11 digits (1 country + 10 local).
+    return digits.length >= 11 ? `+${digits}` : null;
+  }
+
+  // Indian: 10 digits → prepend +91. 12 digits starting with 91 → prepend +.
+  // 11 digits starting with 0 → drop the 0, treat as 10-digit Indian.
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  if (digits.length === 11 && digits.startsWith('0')) return `+91${digits.slice(1)}`;
+
+  // Anything else — too short or weird length. Bail rather than send garbage.
+  return null;
+};
+
+/**
  * Create a Cashfree order for a booking. Returns the `payment_session_id`
  * the frontend SDK needs to render the hosted checkout.
  *
@@ -96,6 +131,19 @@ const createOrder = async ({
   notifyUrl,          // server-to-server webhook
   note,               // optional human-readable note
 }) => {
+  // Cashfree rejects bare 9-digit numbers and anything with stray punctuation
+  // with `customer_details.customer_phone_invalid` (400). Normalize upfront
+  // so a saved-but-messy DB number doesn't take the whole booking down.
+  const phone = normalizePhone(customer.phone);
+  if (!phone) {
+    const err = new Error(
+      `Invalid phone "${customer.phone}". Please update your profile with a 10-digit Indian mobile number (or include the country code for international).`
+    );
+    err.code = 'invalid_phone';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const body = {
     order_id: bookingCode,
     order_amount: Number(amount),
@@ -104,7 +152,7 @@ const createOrder = async ({
       customer_id: String(customer.id),
       customer_name: customer.name || 'Guest',
       customer_email: customer.email,
-      customer_phone: customer.phone,
+      customer_phone: phone,
     },
     order_meta: {
       return_url: returnUrl,
@@ -154,6 +202,54 @@ const verifyWebhookSignature = ({ rawBody, signature, timestamp }) => {
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(String(signature)));
 };
 
+/**
+ * Initiate a refund on a paid Cashfree order. The bank then takes 5–7
+ * business days to actually credit the user's source instrument — Cashfree
+ * handles routing the refund back to whichever method paid (UPI / card /
+ * netbanking) automatically based on the original payment.
+ *
+ * Required by Cashfree:
+ *   - refund_id is OUR idempotency key. We use `<orderId>-r1` so multiple
+ *     partial refunds against the same order would be -r1, -r2, etc.
+ *   - refund_amount in rupees (decimal), refund_note as free text.
+ *
+ * Returns the parsed Cashfree response with fields like cf_refund_id,
+ * refund_status (PENDING/SUCCESS/FAILED/CANCELLED), processed_at.
+ */
+const createRefund = async ({ orderId, amount, refundId, note }) => {
+  if (!orderId) throw new Error('orderId is required for refund');
+  const body = {
+    refund_id: String(refundId || `${orderId}-r1`),
+    refund_amount: Number(amount),
+    refund_note: String(note || 'Booking cancelled').slice(0, 100),
+  };
+  return cashfreeRequest({
+    method: 'POST',
+    path: `/orders/${encodeURIComponent(orderId)}/refunds`,
+    body,
+  });
+};
+
+/**
+ * Look up the status of a previously-initiated refund. Useful for the
+ * "refund settled?" reconciliation job and for the admin UI to show the
+ * latest status without waiting for a webhook.
+ */
+const getRefund = async ({ orderId, refundId }) =>
+  cashfreeRequest({
+    method: 'GET',
+    path: `/orders/${encodeURIComponent(orderId)}/refunds/${encodeURIComponent(refundId)}`,
+  });
+
+// Mapping Cashfree's status strings to our `booking.refundStatus` enum so the
+// rest of the codebase doesn't have to know Cashfree's vocabulary.
+const mapCashfreeRefundStatus = (cfStatus) => {
+  const s = String(cfStatus || '').toUpperCase();
+  if (s === 'SUCCESS') return 'completed';
+  if (s === 'FAILED' || s === 'CANCELLED') return 'failed';
+  return 'processing'; // PENDING / ONHOLD / unknown → treat as in-flight
+};
+
 module.exports = {
   isConfigured,
   resolveMode,
@@ -162,4 +258,8 @@ module.exports = {
   getOrder,
   isPaid,
   verifyWebhookSignature,
+  createRefund,
+  getRefund,
+  mapCashfreeRefundStatus,
+  normalizePhone,
 };

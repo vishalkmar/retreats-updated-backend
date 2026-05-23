@@ -1,31 +1,43 @@
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { User, Coupon, WalletTransaction, Booking, sequelize } = require('../models');
+const { User, Coupon, WalletTransaction, Booking, ReferralConfig, sequelize } = require('../models');
 
-// All amounts in paise so we never lose a rupee to float rounding.
-// Tunable via env without touching code.
-const intEnv = (key, def) => {
-  const n = parseInt(process.env[key], 10);
-  return Number.isFinite(n) && n >= 0 ? n : def;
+// ─── Config loading ───────────────────────────────────────────────────────
+// All amounts in paise. We read the singleton ReferralConfig row each time
+// the service is called so admin edits take effect immediately (no restart).
+// Falls back to hard-coded defaults if the row hasn't been seeded yet.
+
+const DEFAULT_CONFIG = {
+  baseAmountPaise: 30000,            // ₹300 per qualifying referral
+  tiers: [
+    { atCount: 3, withinDays: 10, totalPayoutPaise: 120000, label: '3 referrals within 10 days' },
+  ],
+  enabled: true,
 };
 
-const CONFIG = {
-  // Referrer's wallet payout when their referee makes the first paid booking.
-  referrerWalletPaise: intEnv('REFERRAL_REFERRER_WALLET_PAISE', 50000), // ₹500
-
-  // Welcome coupon for the new user (referee). 10% off, max ₹500.
-  newUserCouponPercent: intEnv('REFERRAL_NEW_USER_COUPON_PERCENT', 10),
-  newUserCouponCapPaise: intEnv('REFERRAL_NEW_USER_COUPON_CAP_PAISE', 50000),
-  newUserCouponExpiryDays: intEnv('REFERRAL_NEW_USER_COUPON_EXPIRY_DAYS', 60),
-
-  // Bonus coupon for the referrer (in addition to wallet credit).
-  referrerCouponPercent: intEnv('REFERRAL_REFERRER_COUPON_PERCENT', 15),
-  referrerCouponCapPaise: intEnv('REFERRAL_REFERRER_COUPON_CAP_PAISE', 100000),
-  referrerCouponExpiryDays: intEnv('REFERRAL_REFERRER_COUPON_EXPIRY_DAYS', 90),
+const loadConfig = async () => {
+  try {
+    const row = await ReferralConfig.findByPk(1);
+    if (!row) return DEFAULT_CONFIG;
+    return {
+      baseAmountPaise: Math.max(0, parseInt(row.baseAmountPaise, 10) || 0),
+      tiers: Array.isArray(row.tiers) ? row.tiers : DEFAULT_CONFIG.tiers,
+      enabled: row.enabled !== false,
+    };
+  } catch {
+    return DEFAULT_CONFIG;
+  }
 };
 
-// Build a code like WELCOME-A4F8B2. Loops on the very rare collision so we
-// never write two coupons with the same code (the column is UNIQUE).
+// Public helper so the admin UI can render the same defaults if the row
+// doesn't exist yet. Kept on the service so there's one source of truth.
+const getDefaultConfig = () => DEFAULT_CONFIG;
+
+// ─── Coupon helpers ───────────────────────────────────────────────────────
+// We keep generateCouponCode + validate/consume/restore exported because the
+// rest of the booking flow uses them. Referral-coupon issuance was removed
+// in the v2 referral rewrite (only the referrer earns money now).
+
 const generateCouponCode = async (prefix = 'CODE') => {
   for (let i = 0; i < 6; i++) {
     const tail = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -37,81 +49,100 @@ const generateCouponCode = async (prefix = 'CODE') => {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}`;
 };
 
-/**
- * Issue the welcome + referrer coupons the moment a brand-new user completes
- * their profile WITH a referredByUserId set. Idempotent — guards against
- * double-issuance if completeProfile somehow fires twice for the same user.
- *
- * Why both coupons here:
- *   • The referee sees their welcome coupon immediately, so the very first
- *     booking already shows the discount on the preview page.
- *   • The referrer's coupon is the immediate "thanks" so they feel rewarded
- *     even before the wallet payout (which requires a paid booking).
- */
-const issueReferralCouponsOnSignup = async ({ refereeUser, referrerUser }) => {
-  if (!refereeUser || !referrerUser || refereeUser.id === referrerUser.id) return;
+// ─── Referral payout (v2) ─────────────────────────────────────────────────
+// New rules (May 2026):
+//   • ONLY the referrer earns. The referee gets nothing extra.
+//   • Payout fires when the referee's FIRST paid booking is confirmed.
+//   • Flat baseAmountPaise (default ₹300) per qualifying referral, UNLESS a
+//     tier bonus kicks in.
+//   • Tier example (default): { atCount: 3, withinDays: 10, totalPayoutPaise: 120000 }
+//     — when the referrer's Nth qualifying referee (N=atCount) completes their
+//     first paid booking AND all N referees did so within `withinDays` of the
+//     FIRST qualifying referee's first-paid date, the tier pays out a single
+//     "top-up" credit so the referrer's total for those N referees equals
+//     totalPayoutPaise (i.e. tier - already-paid base × N).
+//   • Multiple tiers allowed — first one that matches wins.
 
-  const now = new Date();
-  const refereeExpiry = new Date(now.getTime() + CONFIG.newUserCouponExpiryDays * 24 * 60 * 60 * 1000);
-  const referrerExpiry = new Date(now.getTime() + CONFIG.referrerCouponExpiryDays * 24 * 60 * 60 * 1000);
-
-  // De-dupe: if either coupon was already issued for this referee/referrer
-  // pair, skip silently. Match by (userId, reason, referenceId=other user id)
-  // — we encode the link via the `description` field for traceability.
-  const refereeExists = await Coupon.findOne({
-    where: { userId: refereeUser.id, reason: 'referral_signup' },
+// Find every other referee of this referrer whose first paid booking has
+// already cleared, ordered by that "first paid" timestamp. Used to compute
+// `currentCount` and the start of the bonus window.
+const fetchPriorQualifiedReferees = async (referrerId, excludingRefereeId) => {
+  const referees = await User.findAll({
+    where: { referredByUserId: referrerId, id: { [Op.ne]: excludingRefereeId } },
     attributes: ['id'],
+    raw: true,
   });
-  if (!refereeExists) {
-    const code = await generateCouponCode('WELCOME');
-    await Coupon.create({
-      code,
-      userId: refereeUser.id,
-      kind: 'percent',
-      value: CONFIG.newUserCouponPercent,
-      maxDiscountPaise: CONFIG.newUserCouponCapPaise,
-      minOrderPaise: 0,
-      usageLimit: 1,
-      timesUsed: 0,
-      expiresAt: refereeExpiry,
-      reason: 'referral_signup',
-      description: `Welcome bonus — joined via ${referrerUser.referralCode || 'a friend'}`,
-      isActive: true,
-    });
-  }
+  if (!referees.length) return [];
 
-  const referrerExists = await Coupon.findOne({
-    where: { userId: referrerUser.id, reason: 'referral_referee', description: { [Op.like]: `%${refereeUser.email}%` } },
-    attributes: ['id'],
+  // For each referee, find their earliest paid booking. We only count those
+  // who have one. Done in one IN-query so this stays O(referees).
+  const firstPaid = await Booking.findAll({
+    where: {
+      userId: { [Op.in]: referees.map((r) => r.id) },
+      status: { [Op.in]: ['confirmed', 'completed'] },
+      paidAt: { [Op.ne]: null },
+    },
+    attributes: ['userId', [sequelize.fn('MIN', sequelize.col('paidAt')), 'firstPaidAt']],
+    group: ['userId'],
+    raw: true,
   });
-  if (!referrerExists) {
-    const code = await generateCouponCode('THANKS');
-    await Coupon.create({
-      code,
-      userId: referrerUser.id,
-      kind: 'percent',
-      value: CONFIG.referrerCouponPercent,
-      maxDiscountPaise: CONFIG.referrerCouponCapPaise,
-      minOrderPaise: 0,
-      usageLimit: 1,
-      timesUsed: 0,
-      expiresAt: referrerExpiry,
-      reason: 'referral_referee',
-      description: `Thank-you bonus for referring ${refereeUser.email}`,
-      isActive: true,
-    });
-  }
+
+  return firstPaid
+    .filter((r) => r.firstPaidAt)
+    .map((r) => ({ refereeId: r.userId, firstPaidAt: new Date(r.firstPaidAt) }))
+    .sort((a, b) => a.firstPaidAt - b.firstPaidAt);
 };
 
-/**
- * Pay the referrer their wallet credit when the referee finishes their FIRST
- * paid booking. Called from the Cashfree confirmation path.
- *
- *   - Guard with a referenceType+referenceId lookup so a re-fired webhook
- *     can't credit twice.
- *   - "First paid booking" = no other confirmed/completed booking exists for
- *     this referee. If they had already paid once, we skip silently.
- */
+// Pick the highest-rank tier the referrer is currently eligible for, given
+// the count of qualifying referees (including the one that just paid) and
+// the dates of all qualifying referees ordered chronologically.
+const evaluateTier = (tiers, qualifyingDates) => {
+  const count = qualifyingDates.length;
+  if (count === 0) return null;
+  const firstAt = qualifyingDates[0];
+  const latestAt = qualifyingDates[qualifyingDates.length - 1];
+
+  // Match the tier whose atCount equals this referral count AND whose
+  // withinDays window from `firstAt` still contains `latestAt`.
+  for (const tier of tiers) {
+    if (!tier || typeof tier.atCount !== 'number') continue;
+    if (count !== tier.atCount) continue;
+    const windowMs = (tier.withinDays || 0) * 24 * 60 * 60 * 1000;
+    if (windowMs > 0 && latestAt - firstAt > windowMs) continue;
+    return tier;
+  }
+  return null;
+};
+
+// Atomic credit helper. Locks the user row, bumps the balance, writes the
+// ledger row, returns the new balance. All other referral writes go through
+// this so the wallet never observes a partial state.
+const creditReferrerWallet = async ({ referrerId, amountPaise, refereeId, bookingId, kind, label }) => {
+  if (!amountPaise || amountPaise <= 0) return null;
+  return sequelize.transaction(async (tx) => {
+    const fresh = await User.findByPk(referrerId, { transaction: tx, lock: tx.LOCK.UPDATE });
+    if (!fresh) return null;
+    const newBalance = (fresh.walletBalancePaise || 0) + amountPaise;
+    fresh.walletBalancePaise = newBalance;
+    await fresh.save({ transaction: tx });
+
+    await WalletTransaction.create({
+      userId: fresh.id,
+      amountPaise,
+      balanceAfterPaise: newBalance,
+      type: 'referral_payout',
+      // We pair (kind, refereeId) into referenceId so the same referee can
+      // trigger BOTH a base payout AND (later) a tier top-up without colliding
+      // on the idempotency guard.
+      referenceType: 'referral',
+      referenceId: `${kind}:${refereeId}`,
+      description: label,
+    }, { transaction: tx });
+
+    return { newBalance, amountPaise };
+  });
+};
+
 const creditReferrerForFirstPaid = async ({ booking }) => {
   if (!booking || !booking.userId) return null;
   if (booking.status !== 'confirmed' && booking.status !== 'completed') return null;
@@ -119,70 +150,130 @@ const creditReferrerForFirstPaid = async ({ booking }) => {
   const referee = await User.findByPk(booking.userId);
   if (!referee || !referee.referredByUserId) return null;
 
-  // Has this booking already triggered a payout? (Idempotency.)
-  const already = await WalletTransaction.findOne({
-    where: { type: 'referral_payout', referenceType: 'booking', referenceId: String(booking.id) },
-    attributes: ['id'],
-  });
-  if (already) return null;
+  const referrer = await User.findByPk(referee.referredByUserId);
+  if (!referrer || !referrer.isActive) return null;
 
-  // Was this the FIRST paid booking for this referee? Count any other
-  // confirmed/completed booking by this user; if there's one, skip.
+  const config = await loadConfig();
+  if (!config.enabled) return null;
+
+  // Is this actually the FIRST paid booking for this referee? Check for any
+  // OTHER confirmed/completed booking on the same user.
   const earlierPaid = await Booking.findOne({
     where: {
       userId: referee.id,
       status: { [Op.in]: ['confirmed', 'completed'] },
       id: { [Op.ne]: booking.id },
+      paidAt: { [Op.ne]: null },
     },
     attributes: ['id'],
   });
   if (earlierPaid) return null;
 
-  const referrer = await User.findByPk(referee.referredByUserId);
-  if (!referrer || !referrer.isActive) return null;
-
-  const amount = CONFIG.referrerWalletPaise;
-  if (amount <= 0) return null;
-
-  // Single atomic credit — update the running balance and write the ledger
-  // row in one transaction so the wallet UI never sees a partial state.
-  return sequelize.transaction(async (tx) => {
-    const fresh = await User.findByPk(referrer.id, { transaction: tx, lock: tx.LOCK.UPDATE });
-    const newBalance = (fresh.walletBalancePaise || 0) + amount;
-    fresh.walletBalancePaise = newBalance;
-    await fresh.save({ transaction: tx });
-
-    await WalletTransaction.create({
-      userId: fresh.id,
-      amountPaise: amount,
-      balanceAfterPaise: newBalance,
+  // Idempotency: have we ALREADY paid out for this referee? In v2 we use a
+  // single `payout:<refereeId>` key per referee, which covers both the flat
+  // base payout AND any tier-triggered larger payout. So one referee = one
+  // wallet row, no matter which path we took.
+  // Legacy `base:<refereeId>` keys from the pre-consolidation rollout also
+  // count as "already paid" so we never double-credit older test data.
+  const already = await WalletTransaction.findOne({
+    where: {
       type: 'referral_payout',
-      referenceType: 'booking',
-      referenceId: String(booking.id),
-      description: `Referral bonus — ${referee.email} completed first booking`,
-    }, { transaction: tx });
-
-    return { userId: fresh.id, amountPaise: amount, balanceAfterPaise: newBalance };
+      referenceType: 'referral',
+      referenceId: { [Op.in]: [`payout:${referee.id}`, `base:${referee.id}`] },
+    },
+    attributes: ['id'],
   });
+  if (already) return null;
+
+  // Evaluate the tier with this referee included. If the tier matches AND
+  // this is the FIRST time it has matched for this referrer, the triggering
+  // (last) referee gets a single combined payout = tier total minus what
+  // earlier referees already pulled in as base.
+  const prior = await fetchPriorQualifiedReferees(referrer.id, referee.id);
+  const allQualifying = [
+    ...prior,
+    { refereeId: referee.id, firstPaidAt: booking.paidAt || new Date() },
+  ].sort((a, b) => a.firstPaidAt - b.firstPaidAt);
+
+  const matchedTier = evaluateTier(config.tiers || [], allQualifying.map((x) => x.firstPaidAt));
+
+  // Has this tier already been satisfied for an OLDER window? (Defensive —
+  // current evaluateTier only matches when count === atCount exactly, so
+  // this shouldn't fire, but the check costs nothing and stops bugs.)
+  let tierFirstHit = false;
+  if (matchedTier) {
+    const tierKey = `tier:${matchedTier.atCount}:${matchedTier.withinDays}`;
+    const tierPaidBefore = await WalletTransaction.findOne({
+      where: {
+        type: 'referral_payout',
+        referenceType: 'referral',
+        referenceId: { [Op.like]: `${tierKey}:%` },
+      },
+      attributes: ['id'],
+    });
+    tierFirstHit = !tierPaidBefore;
+  }
+
+  let amountPaise;
+  let label;
+  if (matchedTier && tierFirstHit) {
+    // The triggering referee earns: tier total — earlier base payouts.
+    // e.g. 3-in-10 tier ₹1200, base ₹300 → first 2 referees got ₹300 each
+    // (total ₹600), this referee earns ₹600 in a single combined row.
+    const earlierBaseTotal = config.baseAmountPaise * (matchedTier.atCount - 1);
+    amountPaise = Math.max(config.baseAmountPaise, matchedTier.totalPayoutPaise - earlierBaseTotal);
+    label = `Referral reward — ${referee.email} completed first booking · ${matchedTier.label || `${matchedTier.atCount}-in-${matchedTier.withinDays}-day bonus`}`;
+  } else {
+    amountPaise = config.baseAmountPaise;
+    label = `Referral reward — ${referee.email} completed first booking`;
+  }
+
+  if (amountPaise <= 0) return null;
+
+  const credit = await creditReferrerWallet({
+    referrerId: referrer.id,
+    amountPaise,
+    refereeId: referee.id,
+    bookingId: booking.id,
+    kind: 'payout',
+    label,
+  });
+  return credit ? [credit] : null;
 };
 
-/**
- * Validate a coupon code for a given user + cart and return the discount
- * amount in paise. Returns `{ ok: false, reason }` for any rejection. We
- * deliberately keep error reasons human-friendly so the frontend can show
- * them verbatim.
- *
- *   - Personal coupons (userId != null) only match if userId === user.id.
- *   - Public coupons match for anyone but still respect usageLimit / expiry.
- *   - Discount math returns paise; caller decides where in the pricing
- *     ladder to apply it.
- */
+// ─── Coupon validation / lifecycle (unchanged from v1) ────────────────────
+
 const validateCouponFor = async ({ code, user, subtotalPaise, taxPaise }) => {
   const clean = String(code || '').trim().toUpperCase();
   if (!clean) return { ok: false, reason: 'Please enter a coupon code' };
 
+  // Friendly path when the user accidentally pastes their OWN referral code
+  // into the coupon box. Referral codes are short (~6-8 chars, no prefix)
+  // while real coupons start with a word like WELCOME-, PROMO-, etc.
+  if (user?.referralCode && clean === String(user.referralCode).toUpperCase()) {
+    return {
+      ok: false,
+      reason: `${clean} is your referral code — share it with friends to earn wallet credit, it can't be used as a coupon on your own booking.`,
+    };
+  }
+
   const coupon = await Coupon.findOne({ where: { code: clean } });
-  if (!coupon || !coupon.isActive) return { ok: false, reason: 'Coupon not found' };
+  if (!coupon || !coupon.isActive) {
+    // Soft hint: if what they entered looks like a referral code (no hyphen,
+    // matches another user's code), nudge them toward sharing instead of
+    // typing it here.
+    const looksLikeRefCode = !clean.includes('-') && clean.length <= 10;
+    if (looksLikeRefCode) {
+      const refMatch = await User.findOne({ where: { referralCode: clean }, attributes: ['id'] });
+      if (refMatch) {
+        return {
+          ok: false,
+          reason: `${clean} is a friend's referral code — those can't be applied as coupons. Coupon codes look like WELCOME-XXXX.`,
+        };
+      }
+    }
+    return { ok: false, reason: 'Coupon not found' };
+  }
   if (coupon.userId && coupon.userId !== user.id) return { ok: false, reason: 'This coupon belongs to another account' };
   if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) return { ok: false, reason: 'This coupon has expired' };
   if (coupon.usageLimit && coupon.timesUsed >= coupon.usageLimit) return { ok: false, reason: 'This coupon has already been used' };
@@ -212,11 +303,6 @@ const validateCouponFor = async ({ code, user, subtotalPaise, taxPaise }) => {
   };
 };
 
-/**
- * Mark a coupon as consumed by a specific booking. Called from booking.create
- * after the coupon has been validated and the discount baked into the row.
- * Bumping timesUsed is best-effort — if the booking later cancels, we restore.
- */
 const consumeCoupon = async ({ coupon }) => {
   if (!coupon) return;
   await coupon.increment('timesUsed', { by: 1 });
@@ -231,11 +317,8 @@ const restoreCoupon = async ({ code }) => {
   }
 };
 
-/**
- * Debit the user's wallet for a booking and write the ledger row. Called from
- * booking.create the moment the wallet portion is reserved. If the booking
- * later cancels, refundWalletForBooking puts it back.
- */
+// ─── Wallet debit / refund for bookings (unchanged from v1) ───────────────
+
 const debitWalletForBooking = async ({ userId, amountPaise, bookingId }) => {
   if (!amountPaise || amountPaise <= 0) return null;
   return sequelize.transaction(async (tx) => {
@@ -261,7 +344,6 @@ const debitWalletForBooking = async ({ userId, amountPaise, bookingId }) => {
 const refundWalletForBooking = async ({ userId, amountPaise, bookingId }) => {
   if (!amountPaise || amountPaise <= 0) return null;
 
-  // Idempotency: don't refund twice if the cancel path fires more than once.
   const already = await WalletTransaction.findOne({
     where: { userId, type: 'booking_refund', referenceType: 'booking', referenceId: String(bookingId) },
     attributes: ['id'],
@@ -287,8 +369,9 @@ const refundWalletForBooking = async ({ userId, amountPaise, bookingId }) => {
 };
 
 module.exports = {
-  CONFIG,
-  issueReferralCouponsOnSignup,
+  getDefaultConfig,
+  loadConfig,
+  evaluateTier,
   creditReferrerForFirstPaid,
   validateCouponFor,
   consumeCoupon,

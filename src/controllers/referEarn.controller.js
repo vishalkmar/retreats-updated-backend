@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 const { User, Coupon, WalletTransaction, Booking } = require('../models');
 const { ok, fail } = require('../utils/response');
 const { fromPaise } = require('../services/booking.service');
-const { CONFIG, validateCouponFor } = require('../services/referEarn.service');
+const { loadConfig, validateCouponFor } = require('../services/referEarn.service');
 
 const publicCoupon = (c) => {
   if (!c) return null;
@@ -99,26 +99,39 @@ const listReferees = asyncHandler(async (req, res) => {
     }
   }
 
-  // The payout transaction tells us whether the referrer was actually credited
-  // for this referee — independent of the paid booking count, just in case
-  // an admin manually adjusted things.
+  // v2 consolidated referral payouts use referenceId="payout:<refereeUserId>"
+  // (a single row per referee that includes any tier bonus). Legacy data may
+  // also have "base:<refereeUserId>" + "tier:N:D:<anchor>" pairs from before
+  // the consolidation rewrite — we sum both shapes so older test data still
+  // renders correctly.
   const payouts = await WalletTransaction.findAll({
-    where: { userId: req.user.id, type: 'referral_payout' },
+    where: { userId: req.user.id, type: 'referral_payout', referenceType: 'referral' },
     attributes: ['referenceId', 'amountPaise', 'createdAt'],
   });
-  const payoutByBooking = new Map(payouts.map((p) => [String(p.referenceId), p]));
-
-  // Resolve which booking belongs to which referee for matching payouts.
-  let bookingToUser = {};
-  if (payouts.length > 0) {
-    const bookingIds = payouts.map((p) => parseInt(p.referenceId, 10)).filter(Number.isFinite);
-    const bks = await Booking.findAll({ where: { id: { [Op.in]: bookingIds } }, attributes: ['id', 'userId'] });
-    for (const b of bks) bookingToUser[b.id] = b.userId;
-  }
   const payoutByUser = {};
-  for (const [bid, p] of payoutByBooking) {
-    const uid = bookingToUser[bid];
-    if (uid) payoutByUser[uid] = p;
+  for (const p of payouts) {
+    const ref = String(p.referenceId || '');
+    let uid = null;
+    if (ref.startsWith('payout:')) uid = parseInt(ref.slice(7), 10);
+    else if (ref.startsWith('base:')) uid = parseInt(ref.slice(5), 10);
+    // tier:N:D:<anchor> rows go to the anchor referee but we no longer
+    // surface them separately — they're folded into the anchor's payout above.
+    else if (ref.startsWith('tier:')) {
+      const parts = ref.split(':');
+      uid = parseInt(parts[3], 10);
+    }
+    if (!uid) continue;
+    // If multiple rows reference the same user (legacy: base + tier anchor),
+    // sum the amounts so the UI shows the total reward per referee.
+    if (payoutByUser[uid]) {
+      payoutByUser[uid] = {
+        ...payoutByUser[uid],
+        amountPaise: (payoutByUser[uid].amountPaise || 0) + (p.amountPaise || 0),
+        createdAt: p.createdAt > payoutByUser[uid].createdAt ? p.createdAt : payoutByUser[uid].createdAt,
+      };
+    } else {
+      payoutByUser[uid] = { referenceId: ref, amountPaise: p.amountPaise, createdAt: p.createdAt };
+    }
   }
 
   const data = referees.map((r) => {
@@ -159,14 +172,20 @@ const maskEmail = (email) => {
 };
 
 // GET /api/refer-earn/config — return the public-facing reward amounts so
-// the frontend can render "Earn ₹500 per friend" without hardcoding it.
+// the frontend can render "Earn ₹300 per friend" + the tier bonuses without
+// hardcoding them. Reads the admin-configurable singleton so an edit in the
+// dashboard reflects immediately.
 const getConfig = asyncHandler(async (req, res) => {
+  const cfg = await loadConfig();
   return ok(res, {
-    referrerWallet: fromPaise(CONFIG.referrerWalletPaise),
-    newUserCouponPercent: CONFIG.newUserCouponPercent,
-    newUserCouponCap: fromPaise(CONFIG.newUserCouponCapPaise),
-    referrerCouponPercent: CONFIG.referrerCouponPercent,
-    referrerCouponCap: fromPaise(CONFIG.referrerCouponCapPaise),
+    enabled: cfg.enabled,
+    baseAmount: fromPaise(cfg.baseAmountPaise),
+    tiers: (cfg.tiers || []).map((t) => ({
+      atCount: t.atCount,
+      withinDays: t.withinDays,
+      totalPayout: fromPaise(t.totalPayoutPaise || 0),
+      label: t.label,
+    })),
   });
 });
 

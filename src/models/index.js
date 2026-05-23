@@ -44,6 +44,8 @@ const WishlistItem = require('./wishlistItem.model');
 const Booking = require('./booking.model');
 const WalletTransaction = require('./walletTransaction.model');
 const Coupon = require('./coupon.model');
+const ReferralConfig = require('./referralConfig.model');
+const RefundPolicy = require('./refundPolicy.model');
 
 const db = {
   sequelize,
@@ -92,6 +94,8 @@ const db = {
   Booking,
   WalletTransaction,
   Coupon,
+  ReferralConfig,
+  RefundPolicy,
 };
 
 // ─── Users: self-reference for referrals ──────────────────────────────────
