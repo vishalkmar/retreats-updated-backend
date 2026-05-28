@@ -3,6 +3,8 @@ const { Op } = require('sequelize');
 const { Property, PropertyPhase4Data, Officer, Auditor } = require('../models');
 const { ok, fail } = require('../../utils/response');
 const { emitToProperty } = require('../services/socket');
+const { notifyUser } = require('../services/notifications');
+const { sendContract } = require('../services/mailer');
 const {
   SECTION_KEYS, SECTION_KEY_SET,
   PHASE4_SCHEMA, PHASE4_FIELD_KEYS,
@@ -183,6 +185,17 @@ const submitForReview = asyncHandler(async (req, res) => {
     status: property.status,
   });
 
+  if (property.assignedOfficerId) {
+    notifyUser({
+      role: 'officer',
+      userId: property.assignedOfficerId,
+      type: 'phase4_submitted',
+      title: `Phase 4 submitted: ${property.propertyCode || property.name}`,
+      body: 'Deep-dive ready for your review.',
+      propertyId: property.id,
+    });
+  }
+
   return ok(res, { property }, 'Phase 4 submitted to centralize for review');
 });
 
@@ -272,6 +285,29 @@ const sendBackForRevision = asyncHandler(async (req, res) => {
     propertyId: property.id,
     status: property.status,
   });
+  // Route the ping to whoever actually owns Phase 4 — auditor for
+  // auditor-onboarded, owner for self-onboarded.
+  if (property.source === 'self' && property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'phase4_revision',
+      title: `Phase 4 sent back: ${property.propertyCode || property.name}`,
+      body: 'One or more sections need revision.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  } else if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'phase4_revision',
+      title: `Phase 4 sent back: ${property.propertyCode || property.name}`,
+      body: 'One or more sections need revision.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
   return ok(res, { property }, 'Sent back to auditor for revision');
 });
 
@@ -344,15 +380,71 @@ const finalApprove = asyncHandler(async (req, res) => {
   contract.releasedByAuditorId = null;
   await contract.save();
 
+  // For self-onboarded properties the auditor doesn't exist in the loop —
+  // the officer's final approval also releases the contract straight to the
+  // owner, so they don't need a separate "send to owner" step.
+  let releasedDirectly = false;
+  if (property.source === 'self' && pdfBuffer) {
+    try {
+      await sendContract({
+        to: property.ownerEmail,
+        ownerName: property.ownerName,
+        propertyName: property.name,
+        propertyCode: property.propertyCode,
+        pdfBuffer,
+        pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
+      });
+      contract.sentAt = new Date();
+      contract.releasedByAuditorId = null;
+      await contract.save();
+      property.status = PROPERTY_STATUS.CONTRACT_SENT;
+      await property.save();
+      releasedDirectly = true;
+    } catch (err) {
+      console.warn('[PWA] auto contract release to owner failed:', err.message);
+    }
+  }
+
   emitToProperty(property.id, 'property:status', {
     propertyId: property.id,
     status: property.status,
   });
 
+  if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'contract_generated',
+      title: `Contract ready: ${property.propertyCode || property.name}`,
+      body: 'Final approved. Preview the PDF, then send to the owner.',
+      propertyId: property.id,
+    });
+  }
+  // Always notify the owner — for auditor-onboarded properties this just
+  // tells them "approved, contract on the way"; for self-onboarded ones
+  // (where we just emailed it) it tells them "contract delivered".
+  if (property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: releasedDirectly ? 'contract_sent_to_owner' : 'contract_generated',
+      title: releasedDirectly
+        ? `Contract sent: ${property.propertyCode || property.name}`
+        : `Final approved: ${property.propertyCode || property.name}`,
+      body: releasedDirectly
+        ? 'Check your inbox — the contract is attached.'
+        : 'The auditor will share the signed contract with you shortly.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode },
+    });
+  }
+
   return ok(
     res,
     { property, contract },
-    'Final approved — contract generated and handed to the auditor for release',
+    releasedDirectly
+      ? 'Final approved — contract emailed to the owner'
+      : 'Final approved — contract generated and handed to the auditor for release',
   );
 });
 

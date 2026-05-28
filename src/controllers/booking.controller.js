@@ -16,6 +16,8 @@ const {
   restoreCoupon,
   debitWalletForBooking,
   refundWalletForBooking,
+  capWalletForBooking,
+  loadConfig: loadReferralConfig,
 } = require('../services/referEarn.service');
 
 const normalizeType = (t) => String(t || '').toLowerCase().trim();
@@ -39,6 +41,7 @@ const publicBooking = (booking) => {
       phone: j.guestPhone,
       count: j.guestCount,
     },
+    roomCount: j.roomCount || 1,
     specialRequests: j.specialRequests,
     currency: j.currency,
     pricing: {
@@ -88,10 +91,11 @@ const preview = asyncHandler(async (req, res) => {
   });
 
   const guestCount = Math.max(1, parseInt(req.body.guestCount, 10) || 1);
+  const roomCount = Math.max(1, parseInt(req.body.roomCount, 10) || 1);
 
   // First quote — no discounts — so we know the gross (subtotal + tax) and
   // can validate coupon min-order rules against it.
-  const base = computePricing({ item, guestCount, units: schedule.units, walletPaise: 0, couponDiscountPaise: 0 });
+  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, walletPaise: 0, couponDiscountPaise: 0 });
 
   // Coupon
   let couponResult = null;
@@ -107,24 +111,40 @@ const preview = asyncHandler(async (req, res) => {
     if (couponResult.ok) couponDiscountPaise = couponResult.discountPaise;
   }
 
-  // Wallet — clamp to current balance AND to whatever's left after coupon so
-  // we never quote a negative total. Frontend may pass useWalletPaise=true to
-  // mean "use my whole balance up to the order total".
+  // Wallet — clamp to current balance, the order remainder after coupon,
+  // AND the admin's anti-abuse cap (max per booking). The frontend can pass
+  // useWallet=true ("use as much as the cap allows") or an explicit
+  // useWalletPaise number ("up to N paise, still capped").
   const grossPaise = base.subtotalPaise + base.taxPaise;
   const userBalance = req.user.walletBalancePaise || 0;
+  const refConfig = await loadReferralConfig();
   let walletPaise = 0;
+  let walletCapPaise = 0;
   if (req.body.useWallet === true || req.body.useWalletPaise) {
     const remaining = Math.max(0, grossPaise - couponDiscountPaise);
     const requested = req.body.useWalletPaise
       ? Math.max(0, parseInt(req.body.useWalletPaise, 10) || 0)
       : userBalance;
-    walletPaise = Math.min(userBalance, requested, remaining);
+    walletPaise = capWalletForBooking({
+      requestedPaise: Math.min(requested, remaining),
+      balancePaise: userBalance,
+      grossPaise: remaining,
+      config: refConfig,
+    });
   }
+  // Always report the cap so the UI can show "you can use up to X this booking".
+  walletCapPaise = capWalletForBooking({
+    requestedPaise: userBalance,
+    balancePaise: userBalance,
+    grossPaise: Math.max(0, grossPaise - couponDiscountPaise),
+    config: refConfig,
+  });
 
   const pricing = computePricing({
     item,
     guestCount,
     units: schedule.units,
+    roomCount,
     walletPaise,
     couponDiscountPaise,
   });
@@ -133,6 +153,7 @@ const preview = asyncHandler(async (req, res) => {
     item: buildItemSnapshot(item),
     schedule,
     guestCount,
+    roomCount,
     pricing,
     guest: {
       name: req.user.name || '',
@@ -140,6 +161,11 @@ const preview = asyncHandler(async (req, res) => {
       phone: req.user.phone || '',
     },
     walletAvailablePaise: userBalance,
+    walletMaxThisBookingPaise: walletCapPaise,
+    walletCapsApplied: {
+      maxPerBookingPaise: refConfig.maxPerBookingPaise,
+      maxPerBookingPct: refConfig.maxPerBookingPct,
+    },
     coupon: couponResult ? {
       code: couponCode,
       ok: couponResult.ok,
@@ -180,8 +206,17 @@ const create = asyncHandler(async (req, res) => {
   }
 
   const guestCount = Math.max(1, parseInt(req.body.guestCount, 10) || 1);
-  if (item.meta?.maxOccupancy && itemType === 'room' && guestCount > item.meta.maxOccupancy) {
-    return fail(res, `This room sleeps a maximum of ${item.meta.maxOccupancy} guests`, 400);
+  const roomCount = Math.max(1, parseInt(req.body.roomCount, 10) || 1);
+  // Rooms × max-occupancy is the real cap when N rooms are booked together.
+  if (item.meta?.maxOccupancy && itemType === 'room') {
+    const cap = item.meta.maxOccupancy * roomCount;
+    if (guestCount > cap) {
+      return fail(
+        res,
+        `${roomCount} room${roomCount > 1 ? 's' : ''} of this type sleep a maximum of ${cap} guests`,
+        400,
+      );
+    }
   }
 
   const guestName = String(req.body.guestName || req.user.name || '').trim();
@@ -193,7 +228,7 @@ const create = asyncHandler(async (req, res) => {
   if (!guestPhone) return fail(res, 'Guest phone is required', 400);
 
   // ── Resolve coupon (if any) ────────────────────────────────────────────
-  const base = computePricing({ item, guestCount, units: schedule.units, walletPaise: 0, couponDiscountPaise: 0 });
+  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, walletPaise: 0, couponDiscountPaise: 0 });
 
   let couponObj = null;
   let couponDiscountPaise = 0;
@@ -212,22 +247,29 @@ const create = asyncHandler(async (req, res) => {
     couponCodeApplied = result.coupon.code;
   }
 
-  // ── Resolve wallet draw (if any) ───────────────────────────────────────
+  // ── Resolve wallet draw (if any) — same admin cap as the preview path.
   const gross = base.subtotalPaise + base.taxPaise;
   const userBalance = req.user.walletBalancePaise || 0;
   let walletPaise = 0;
   if (req.body.useWallet === true || req.body.useWalletPaise) {
+    const refConfig = await loadReferralConfig();
     const remaining = Math.max(0, gross - couponDiscountPaise);
     const requested = req.body.useWalletPaise
       ? Math.max(0, parseInt(req.body.useWalletPaise, 10) || 0)
       : userBalance;
-    walletPaise = Math.min(userBalance, requested, remaining);
+    walletPaise = capWalletForBooking({
+      requestedPaise: Math.min(requested, remaining),
+      balancePaise: userBalance,
+      grossPaise: remaining,
+      config: refConfig,
+    });
   }
 
   const pricing = computePricing({
     item,
     guestCount,
     units: schedule.units,
+    roomCount,
     walletPaise,
     couponDiscountPaise,
   });
@@ -247,6 +289,7 @@ const create = asyncHandler(async (req, res) => {
     guestEmail,
     guestPhone,
     guestCount,
+    roomCount: itemType === 'room' ? roomCount : 1,
     specialRequests,
     currency: pricing.currency,
     unitPricePaise: pricing.unitPricePaise,

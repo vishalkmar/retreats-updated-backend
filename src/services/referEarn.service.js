@@ -13,6 +13,9 @@ const DEFAULT_CONFIG = {
     { atCount: 3, withinDays: 10, totalPayoutPaise: 120000, label: '3 referrals within 10 days' },
   ],
   enabled: true,
+  maxPerBookingPaise: 50000,         // ₹500 cap by default
+  maxPerBookingPct: 25,              // 25% of gross by default
+  redemptionTiers: [],               // empty = fall back to global knobs
 };
 
 const loadConfig = async () => {
@@ -23,10 +26,66 @@ const loadConfig = async () => {
       baseAmountPaise: Math.max(0, parseInt(row.baseAmountPaise, 10) || 0),
       tiers: Array.isArray(row.tiers) ? row.tiers : DEFAULT_CONFIG.tiers,
       enabled: row.enabled !== false,
+      maxPerBookingPaise: Math.max(0, parseInt(row.maxPerBookingPaise, 10) || 0),
+      maxPerBookingPct: Math.max(0, Math.min(100, parseInt(row.maxPerBookingPct, 10) || 0)),
+      redemptionTiers: Array.isArray(row.redemptionTiers) ? row.redemptionTiers : [],
     };
   } catch {
     return DEFAULT_CONFIG;
   }
+};
+
+// Find the redemption tier (from the admin-defined ranges) that contains
+// `grossPaise`. Returns `null` when none matches — caller falls back to
+// the global cap.
+const findRedemptionTier = (grossPaise, tiers) => {
+  if (!Array.isArray(tiers) || tiers.length === 0) return null;
+  const g = Math.max(0, Number(grossPaise || 0));
+  for (const t of tiers) {
+    if (!t) continue;
+    const min = Math.max(0, Number(t.minPaise || 0));
+    const max = t.maxPaise === null || t.maxPaise === undefined || t.maxPaise === ''
+      ? Infinity
+      : Math.max(min, Number(t.maxPaise));
+    if (g >= min && g <= max) return t;
+  }
+  return null;
+};
+
+// Compute how much of a user's wallet balance they're allowed to redeem
+// against a single booking. Returns the lesser of:
+//   - actual balance
+//   - matched redemption tier's caps (if any tier matches the gross)
+//   - OR the global caps when no tier matches
+//   - amount that would zero out the order (no negative totals)
+// 0 from a cap field means "no cap" for that knob.
+const capWalletForBooking = ({ requestedPaise, balancePaise, grossPaise, config }) => {
+  let cap = Math.max(0, Number(requestedPaise || 0));
+  cap = Math.min(cap, Math.max(0, Number(balancePaise || 0)));
+  cap = Math.min(cap, Math.max(0, Number(grossPaise || 0)));
+
+  // 1) If a tier matches the booking amount, use its knobs first.
+  const tier = findRedemptionTier(grossPaise, config?.redemptionTiers);
+  if (tier) {
+    if (Number(tier.capPaise) > 0) {
+      cap = Math.min(cap, Number(tier.capPaise));
+    }
+    if (Number(tier.capPct) > 0) {
+      const pctCap = Math.floor((Number(grossPaise || 0) * Number(tier.capPct)) / 100);
+      cap = Math.min(cap, pctCap);
+    }
+    return cap;
+  }
+
+  // 2) No matching tier — fall through to the global caps.
+  if (config?.maxPerBookingPaise > 0) {
+    cap = Math.min(cap, config.maxPerBookingPaise);
+  }
+  if (config?.maxPerBookingPct > 0) {
+    const pctCap = Math.floor((Number(grossPaise || 0) * config.maxPerBookingPct) / 100);
+    cap = Math.min(cap, pctCap);
+  }
+  return cap;
 };
 
 // Public helper so the admin UI can render the same defaults if the row
@@ -143,6 +202,103 @@ const creditReferrerWallet = async ({ referrerId, amountPaise, refereeId, bookin
   });
 };
 
+// v3 trigger: payout fires the moment the referee completes their profile
+// (i.e. first login as a real account, with name + phone). Rules are the
+// same as the v2 first-paid logic — flat base unless a tier matches — but
+// the "qualifying date" comes from the referee row itself, not from any
+// booking.
+const creditReferrerForFirstLogin = async ({ user }) => {
+  if (!user || !user.id || !user.referredByUserId) return null;
+  const referrer = await User.findByPk(user.referredByUserId);
+  if (!referrer || !referrer.isActive) return null;
+
+  const config = await loadConfig();
+  if (!config.enabled) return null;
+
+  // Idempotency — same key the v2 path uses, so an upgrade from v2 to v3
+  // never double-pays a referee that already triggered a base/tier payout.
+  const already = await WalletTransaction.findOne({
+    where: {
+      type: 'referral_payout',
+      referenceType: 'referral',
+      referenceId: { [Op.in]: [`payout:${user.id}`, `base:${user.id}`] },
+    },
+    attributes: ['id'],
+  });
+  if (already) return null;
+
+  // Use the referee's profile-completion moment as the qualifying date.
+  const qualifyingAt = user.updatedAt || new Date();
+
+  // For tier evaluation we need other previously-qualified referees of
+  // the same referrer. We approximate "qualified" by "has a non-null
+  // referredByUserId === referrer.id AND already has a payout row". That
+  // gives us every referee who has already cleared this same gate.
+  const otherReferees = await User.findAll({
+    where: { referredByUserId: referrer.id, id: { [Op.ne]: user.id } },
+    attributes: ['id', 'updatedAt'],
+    raw: true,
+  });
+  const otherIds = otherReferees.map((r) => r.id);
+  let priorDates = [];
+  if (otherIds.length) {
+    const paid = await WalletTransaction.findAll({
+      where: {
+        type: 'referral_payout',
+        referenceType: 'referral',
+        referenceId: { [Op.in]: otherIds.map((id) => `payout:${id}`) },
+      },
+      attributes: ['referenceId', 'createdAt'],
+      raw: true,
+    });
+    priorDates = paid
+      .map((p) => new Date(p.createdAt))
+      .sort((a, b) => a - b);
+  }
+  const allQualifying = [...priorDates, qualifyingAt].sort((a, b) => a - b);
+  const matchedTier = evaluateTier(config.tiers || [], allQualifying);
+
+  let tierFirstHit = false;
+  if (matchedTier) {
+    const tierKey = `tier:${matchedTier.atCount}:${matchedTier.withinDays}`;
+    const tierPaidBefore = await WalletTransaction.findOne({
+      where: {
+        type: 'referral_payout',
+        referenceType: 'referral',
+        referenceId: { [Op.like]: `${tierKey}:%` },
+      },
+      attributes: ['id'],
+    });
+    tierFirstHit = !tierPaidBefore;
+  }
+
+  let amountPaise;
+  let label;
+  if (matchedTier && tierFirstHit) {
+    const earlierBaseTotal = config.baseAmountPaise * (matchedTier.atCount - 1);
+    amountPaise = Math.max(config.baseAmountPaise, matchedTier.totalPayoutPaise - earlierBaseTotal);
+    label = `Referral reward — ${user.email} joined · ${matchedTier.label || `${matchedTier.atCount}-in-${matchedTier.withinDays}-day bonus`}`;
+  } else {
+    amountPaise = config.baseAmountPaise;
+    label = `Referral reward — ${user.email} joined`;
+  }
+  if (amountPaise <= 0) return null;
+
+  const credit = await creditReferrerWallet({
+    referrerId: referrer.id,
+    amountPaise,
+    refereeId: user.id,
+    bookingId: 0,
+    kind: 'payout',
+    label,
+  });
+  return credit ? [credit] : null;
+};
+
+// Legacy v2 trigger — still callable from the payment webhook as a safety
+// net in case the first-login path was skipped for an older referee. Both
+// paths share the same idempotency key (`payout:<refereeId>`) so the
+// referee can never receive a double payout.
 const creditReferrerForFirstPaid = async ({ booking }) => {
   if (!booking || !booking.userId) return null;
   if (booking.status !== 'confirmed' && booking.status !== 'completed') return null;
@@ -372,6 +528,8 @@ module.exports = {
   getDefaultConfig,
   loadConfig,
   evaluateTier,
+  capWalletForBooking,
+  creditReferrerForFirstLogin,
   creditReferrerForFirstPaid,
   validateCouponFor,
   consumeCoupon,

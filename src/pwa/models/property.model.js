@@ -11,9 +11,19 @@ const Property = sequelize.define(
     // refers to as the "Property ID".
     propertyCode: { type: DataTypes.STRING(40), allowNull: true },
 
-    auditorId: { type: DataTypes.INTEGER, allowNull: false },
+    // Nullable now: a property may be onboarded by the owner directly
+    // ("self" source) in which case there is no auditor in the loop.
+    auditorId: { type: DataTypes.INTEGER, allowNull: true },
     assignedOfficerId: { type: DataTypes.INTEGER, allowNull: true },
     ownerId: { type: DataTypes.INTEGER, allowNull: true },
+    // Who initiated this property — drives visibility on each role's
+    // dashboard and skips the auditor's "release contract" step when the
+    // owner is self-serving.
+    source: {
+      type: DataTypes.ENUM('auditor', 'self'),
+      defaultValue: 'auditor',
+      allowNull: false,
+    },
 
     // Phase 1 fields
     name: { type: DataTypes.STRING(220), allowNull: false },

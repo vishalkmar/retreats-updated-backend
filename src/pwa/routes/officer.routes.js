@@ -21,6 +21,10 @@ router.post('/phase4/:id/sections/:sectionKey/decide', phase4Ctrl.decideSection)
 router.post('/phase4/:id/send-back', phase4Ctrl.sendBackForRevision);
 router.post('/phase4/:id/final-approve', phase4Ctrl.finalApprove);
 
+// Contracts dashboard (sent / received / listed) and a PDF proxy.
+router.get('/contracts', ctrl.listContracts);
+router.get('/contracts/:id/pdf', ctrl.downloadContractPdf);
+
 // Messages reuse the shared controller (handler checks officer access).
 router.get('/properties/:id/messages', propertyCtrl.listMessages);
 router.post('/properties/:id/messages', propertyCtrl.postMessage);

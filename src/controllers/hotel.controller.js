@@ -9,6 +9,7 @@ const {
   Facility,
   NearbyPlace,
   Review,
+  AvailableRoom,
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
@@ -154,6 +155,27 @@ const listPublic = asyncHandler(async (req, res) => {
       })
     : [];
 
+  // Replace admin-saved priceFrom with the live cheapest-room price for
+  // each card so we never show "INR 0" when the admin forgot to set it.
+  if (rows.length) {
+    const cheap = await AvailableRoom.findAll({
+      where: { hotelId: { [Op.in]: ids }, isActive: true },
+      attributes: [
+        'hotelId',
+        [sequelize.fn('MIN', sequelize.col('price')), 'minPrice'],
+      ],
+      group: ['hotelId'],
+      raw: true,
+    });
+    const byHotel = Object.fromEntries(
+      cheap.map((c) => [c.hotelId, Number(c.minPrice) || 0]),
+    );
+    for (const h of rows) {
+      const live = byHotel[h.id];
+      if (live && live > 0) h.setDataValue('priceFrom', live);
+    }
+  }
+
   return ok(res, {
     items: rows,
     pagination: {
@@ -186,12 +208,40 @@ const priceStats = asyncHandler(async (req, res) => {
 });
 
 // GET /api/hotels/:slug   (public)
+// Pulls the cheapest active room price for a hotel so the "From INR X"
+// label on cards / detail pages always reflects a real bookable rate.
+// Returns null when there are no active rooms (the caller can decide what
+// to show — e.g. "Contact us" or hide the price entirely).
+const cheapestRoomPriceFor = async (hotelId) => {
+  const row = await AvailableRoom.findOne({
+    where: { hotelId, isActive: true },
+    attributes: ['price', 'priceOriginal', 'currency'],
+    order: [['price', 'ASC']],
+  });
+  if (!row) return null;
+  const price = Number(row.price) || 0;
+  if (price <= 0) return null;
+  return {
+    price,
+    priceOriginal: row.priceOriginal ? Number(row.priceOriginal) : null,
+    currency: row.currency || 'INR',
+  };
+};
+
 const getBySlug = asyncHandler(async (req, res) => {
   const hotel = await Hotel.findOne({
     where: { slug: req.params.slug, isActive: true },
     include: baseInclude(true),
   });
   if (!hotel) return fail(res, 'Hotel not found', 404);
+  // Override admin-saved priceFrom with the live cheapest room price so a
+  // forgotten or zero admin field never leaks "INR 0" to users.
+  const cheapest = await cheapestRoomPriceFor(hotel.id);
+  if (cheapest) {
+    hotel.setDataValue('priceFrom', cheapest.price);
+    if (cheapest.priceOriginal) hotel.setDataValue('priceOriginal', cheapest.priceOriginal);
+    if (cheapest.currency) hotel.setDataValue('currency', cheapest.currency);
+  }
   return ok(res, { hotel });
 });
 

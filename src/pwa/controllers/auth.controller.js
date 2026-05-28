@@ -2,8 +2,7 @@ const asyncHandler = require('express-async-handler');
 const { Auditor, Officer, PropertyOwner, Property, Salesperson } = require('../models');
 const { signToken } = require('../../utils/jwt');
 const { ok, fail } = require('../../utils/response');
-const { issueOtp, verifyOtp } = require('../services/otp');
-const { sendOtp } = require('../services/mailer');
+const { issueOtp, verifyOtp, dispatchOtp, IS_DEV } = require('../services/otp');
 
 const findUserByRole = async (role, email) => {
   if (role === 'auditor') return Auditor.findOne({ where: { email } });
@@ -40,13 +39,22 @@ const login = asyncHandler(async (req, res) => {
       purpose: 'signup_verify',
       ipAddress: req.ip,
     });
-    try {
-      await sendOtp({ to: normalized, code, purpose: 'signup_verify', role });
-    } catch (err) {
-      console.warn('[PWA] sendOtp failed:', err.message);
-      return fail(res, 'Could not send OTP email. Check Brevo email settings.', 500);
-    }
-    return ok(res, { requiresEmailVerification: true, role, email: normalized }, 'Verify your email to continue');
+    const { delivered, devCode, error: emailError } = await dispatchOtp({
+      email: normalized, code, purpose: 'signup_verify', role,
+    });
+    return ok(
+      res,
+      {
+        requiresEmailVerification: true,
+        role,
+        email: normalized,
+        emailDelivered: delivered,
+        ...(IS_DEV && devCode ? { devCode, emailError } : {}),
+      },
+      delivered
+        ? 'Verify your email to continue'
+        : `Email failed (${emailError || 'unknown'}) — use the code shown in the server console`,
+    );
   }
 
   user.lastLoginAt = new Date();
@@ -90,13 +98,17 @@ const resendOtp = asyncHandler(async (req, res) => {
   if (!user) return fail(res, 'Account not found', 404);
 
   const code = await issueOtp({ email: normalized, target: role, purpose, ipAddress: req.ip });
-  try {
-    await sendOtp({ to: normalized, code, purpose, role });
-  } catch (err) {
-    console.warn('[PWA] resendOtp send failed:', err.message);
-    return fail(res, 'Could not send OTP email. Check Brevo email settings.', 500);
-  }
-  return ok(res, {}, 'OTP sent');
+  const { delivered, devCode, error: emailError } = await dispatchOtp({
+    email: normalized, code, purpose, role,
+  });
+  return ok(
+    res,
+    {
+      emailDelivered: delivered,
+      ...(IS_DEV && devCode ? { devCode, emailError } : {}),
+    },
+    delivered ? 'OTP sent' : `Email failed (${emailError || 'unknown'}) — use the code from the server console`,
+  );
 });
 
 // -- Owner login (passwordless via propertyCode + email + OTP) ----------
@@ -113,9 +125,23 @@ const ownerRequestOtp = asyncHandler(async (req, res) => {
   }
   // Owner login is only unlocked AFTER the auditor releases the contract —
   // i.e. status moved past `approved`. While the contract sits with the
-  // auditor (status === 'approved'), the owner can't sign in yet.
+  // auditor (status === 'approved' / 'final_approved'), the owner can't
+  // sign in via this code yet. The message tells them exactly what state
+  // the property is in so the auditor can chase the right person.
   if (!['contract_sent', 'contract_signed', 'completed'].includes(property.status)) {
-    return fail(res, 'Owner access is not yet enabled for this property', 403);
+    const friendly = {
+      draft: 'Audit has not started.',
+      phase1_done: 'Audit basics captured — Phase 3 still in progress.',
+      phase3_submitted: 'Audit submitted, waiting on reviewer.',
+      in_review: 'Audit is under review with the reviewer.',
+      in_revision: 'Audit is being revised by the auditor.',
+      approved: 'Phase 3 approved — Phase 4 deep-dive still pending.',
+      phase4_submitted: 'Phase 4 submitted, awaiting reviewer approval.',
+      phase4_in_revision: 'Phase 4 needs revision before contract is generated.',
+      final_approved: 'Contract is generated but the auditor has not released it to you yet.',
+      rejected: 'This property was rejected.',
+    }[property.status] || 'Contract has not been sent yet.';
+    return fail(res, `Owner access is not enabled yet — ${friendly}`, 403);
   }
 
   const code = await issueOtp({
@@ -125,13 +151,18 @@ const ownerRequestOtp = asyncHandler(async (req, res) => {
     propertyCode,
     ipAddress: req.ip,
   });
-  try {
-    await sendOtp({ to: normalized, code, purpose: 'owner_login', role: 'owner' });
-  } catch (err) {
-    console.warn('[PWA] owner OTP send failed:', err.message);
-    return fail(res, 'Could not send OTP email. Try again later.', 500);
-  }
-  return ok(res, { email: normalized }, 'OTP sent');
+  const { delivered, devCode, error: emailError } = await dispatchOtp({
+    email: normalized, code, purpose: 'owner_login', role: 'owner',
+  });
+  return ok(
+    res,
+    {
+      email: normalized,
+      emailDelivered: delivered,
+      ...(IS_DEV && devCode ? { devCode, emailError } : {}),
+    },
+    delivered ? 'OTP sent' : `Email failed (${emailError || 'unknown'}) — use the code from the server console`,
+  );
 });
 
 const ownerVerifyOtp = asyncHandler(async (req, res) => {
@@ -194,12 +225,90 @@ const changePassword = asyncHandler(async (req, res) => {
   return ok(res, {}, 'Password updated');
 });
 
+// -- Owner email-only login (for self-onboarding) -----------------------
+//
+// Lets a property owner sign in with just their email — no propertyCode
+// required. On verify, if the owner has never logged in before we also
+// capture their name + phone in the same call. After login the owner sees
+// every property tied to their email (both auditor-onboarded and
+// self-onboarded) and can self-onboard new ones from the dashboard.
+
+const ownerEmailRequestOtp = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) return fail(res, 'Email is required', 400);
+  const normalized = email.toLowerCase().trim();
+
+  const code = await issueOtp({
+    email: normalized,
+    target: 'owner',
+    purpose: 'owner_login',
+    ipAddress: req.ip,
+  });
+  const { delivered, devCode, error: emailError } = await dispatchOtp({
+    email: normalized, code, purpose: 'owner_login', role: 'owner',
+  });
+  return ok(
+    res,
+    {
+      email: normalized,
+      emailDelivered: delivered,
+      ...(IS_DEV && devCode ? { devCode, emailError } : {}),
+    },
+    delivered ? 'OTP sent' : `Email failed (${emailError || 'unknown'}) — use the code from the server console`,
+  );
+});
+
+const ownerEmailVerifyOtp = asyncHandler(async (req, res) => {
+  const { email, code, name, phone } = req.body;
+  if (!email || !code) return fail(res, 'Email and code are required', 400);
+  const normalized = email.toLowerCase().trim();
+  const result = await verifyOtp({
+    email: normalized,
+    target: 'owner',
+    purpose: 'owner_login',
+    code,
+  });
+  if (!result.ok) return fail(res, `OTP ${result.reason}`, 400);
+
+  let owner = await PropertyOwner.findOne({ where: { email: normalized } });
+  if (!owner) {
+    if (!name?.trim()) {
+      return fail(res, 'First-time owners must provide a name to continue', 400);
+    }
+    owner = await PropertyOwner.create({
+      email: normalized,
+      name: name.trim(),
+      phone: phone?.trim() || null,
+      emailVerifiedAt: new Date(),
+      lastLoginAt: new Date(),
+    });
+  } else {
+    if (!owner.name && name?.trim()) owner.name = name.trim();
+    if (!owner.phone && phone?.trim()) owner.phone = phone.trim();
+    owner.emailVerifiedAt = owner.emailVerifiedAt || new Date();
+    owner.lastLoginAt = new Date();
+    await owner.save();
+  }
+
+  // Back-link any auditor-created properties that recorded this email so
+  // the owner sees them in their dashboard on first login.
+  await Property.update(
+    { ownerId: owner.id },
+    { where: { ownerEmail: normalized, ownerId: null } },
+  );
+
+  const token = issuePwaToken('owner', owner.id);
+  return ok(res, { token, role: 'owner', user: owner.toSafeJSON() }, 'Logged in');
+});
+
 module.exports = {
   login,
   verifyLoginOtp,
   resendOtp,
   ownerRequestOtp,
   ownerVerifyOtp,
+  ownerEmailRequestOtp,
+  ownerEmailVerifyOtp,
   me,
   changePassword,
 };

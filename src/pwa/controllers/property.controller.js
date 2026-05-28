@@ -13,6 +13,7 @@ const { ok, created, fail } = require('../../utils/response');
 const { getUploadedUrl, removeUploadedFile } = require('../../utils/uploads');
 const { generatePropertyCode } = require('../services/propertyId');
 const { emitToProperty } = require('../services/socket');
+const { notifyUser } = require('../services/notifications');
 const { SECTION_KEY_SET, SECTION_KEYS, PROPERTY_STATUS, FIELD_DECISION } = require('../constants');
 
 // --- shared helpers ----------------------------------------------------
@@ -122,16 +123,30 @@ const upsertSection = asyncHandler(async (req, res) => {
     where: { propertyId: property.id, sectionKey },
   });
 
+  // Look up the current review BEFORE we mutate anything — its decision
+  // tells us whether this is a re-upload after an objection.
+  const existingReview = await FieldReview.findOne({
+    where: { propertyId: property.id, sectionKey },
+  });
+
   const existingPhotos = field?.photoUrls || [];
   const kept = replacePhotos
     ? []
     : existingPhotos.filter((u) => !removeUrls.includes(u));
-  // Best-effort delete of dropped photos
-  if (!replacePhotos) {
-    removeUrls.forEach((u) => removeUploadedFile(u));
-  } else {
-    existingPhotos.forEach((u) => removeUploadedFile(u));
+
+  // Re-uploads after an objection get snapshotted into photoHistory, so we
+  // must keep the underlying files on disk. Only delete files when the
+  // section is being edited in a non-revision state.
+  const wasRejected = existingReview?.decision === FIELD_DECISION.REJECTED;
+  const isRevision = field && (property.status === PROPERTY_STATUS.IN_REVISION || wasRejected);
+  if (!isRevision) {
+    if (!replacePhotos) {
+      removeUrls.forEach((u) => removeUploadedFile(u));
+    } else {
+      existingPhotos.forEach((u) => removeUploadedFile(u));
+    }
   }
+
   const merged = [...kept, ...incomingPhotos];
   const minimumPhotos = minPhotosForSection(property, sectionKey);
   if (merged.length < minimumPhotos) {
@@ -146,20 +161,30 @@ const upsertSection = asyncHandler(async (req, res) => {
       description,
       photoUrls: merged,
       iteration: 1,
+      photoHistory: [],
       updatedByAuditorAt: new Date(),
     });
   } else {
+    if (isRevision) {
+      const history = Array.isArray(field.photoHistory) ? [...field.photoHistory] : [];
+      history.push({
+        iteration: field.iteration,
+        photoUrls: existingPhotos,
+        description: field.description || null,
+        snapshotAt: field.updatedByAuditorAt || field.updatedAt || new Date(),
+        reviewComment: wasRejected ? existingReview?.comment || null : null,
+      });
+      field.photoHistory = history;
+      field.iteration += 1;
+    }
     field.description = description ?? field.description;
     field.photoUrls = merged;
     field.updatedByAuditorAt = new Date();
-    if (property.status === PROPERTY_STATUS.IN_REVISION) field.iteration += 1;
     await field.save();
   }
 
   // Reset officer's review for this section so it goes back to pending.
-  const review = await FieldReview.findOne({
-    where: { propertyId: property.id, sectionKey },
-  });
+  const review = existingReview;
   if (review) {
     review.decision = FIELD_DECISION.PENDING;
     review.comment = null;
@@ -174,6 +199,23 @@ const upsertSection = asyncHandler(async (req, res) => {
     field,
     review,
   });
+
+  // On a re-upload, ping the assigned officer so they know to re-review
+  // this section. We skip the first-edit case (no isRevision) because the
+  // officer hasn't seen the property yet — that ping fires from submitForReview.
+  if (isRevision && property.assignedOfficerId) {
+    const sectionLabel =
+      SECTION_KEYS.find((s) => s.key === sectionKey)?.label || sectionKey;
+    notifyUser({
+      role: 'officer',
+      userId: property.assignedOfficerId,
+      type: 'section_reupload',
+      title: `Re-uploaded: ${sectionLabel}`,
+      body: `Auditor updated ${property.propertyCode || property.name} — please re-review.`,
+      propertyId: property.id,
+      data: { sectionKey, iteration: field.iteration },
+    });
+  }
 
   return ok(res, { field, review }, 'Section saved');
 });
@@ -256,6 +298,17 @@ const submitForReview = asyncHandler(async (req, res) => {
     propertyId: property.id,
     status: property.status,
   });
+
+  if (property.assignedOfficerId) {
+    notifyUser({
+      role: 'officer',
+      userId: property.assignedOfficerId,
+      type: 'property_submitted',
+      title: `Submitted for review: ${property.propertyCode || property.name}`,
+      body: 'Phase 3 audit ready for your review.',
+      propertyId: property.id,
+    });
+  }
 
   const full = await Property.findByPk(property.id, { include: propertyInclude() });
   return ok(res, { property: full }, 'Submitted for review');

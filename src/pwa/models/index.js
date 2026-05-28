@@ -16,6 +16,7 @@ const Salesperson = require('./salesperson.model');
 const AvailabilityLead = require('./availabilityLead.model');
 const VoiceCallLog = require('./voiceCallLog.model');
 const PropertyPhase4Data = require('./propertyPhase4Data.model');
+const Notification = require('./notification.model');
 
 // Property <-> Auditor
 Property.belongsTo(Auditor, { foreignKey: 'auditorId', as: 'auditor' });
@@ -87,4 +88,5 @@ module.exports = {
   AvailabilityLead,
   VoiceCallLog,
   PropertyPhase4Data,
+  Notification,
 };

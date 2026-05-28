@@ -246,4 +246,40 @@ const sendSignedContractNotification = async ({
   });
 };
 
-module.exports = { send, sendOtp, sendInvite, sendContract, sendSignedContractNotification };
+// Sent to the owner once the signed contract lands and the property is
+// flipped to COMPLETED. Acts as the "your retreat is live" receipt.
+const sendListingConfirmation = ({ to, ownerName, propertyName, propertyCode }) => {
+  const subject = `${propertyName} is now live on Retreats by Traveon`;
+  const html = `
+    <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin:0 0 12px;color:#0f766e;">Your retreat is live</h2>
+      <p style="color:#374151;line-height:1.55;">
+        Hello${ownerName ? ` ${ownerName}` : ''}, we've received your signed contract
+        for <strong>${propertyName}</strong>. Onboarding is complete and your
+        property is now live on the Retreats by Traveon platform.
+      </p>
+      <div style="font-size:18px;font-weight:700;letter-spacing:2px;background:#f0fdfa;padding:14px 18px;text-align:center;border-radius:10px;color:#0f766e;margin:18px 0;">
+        Property ID: ${propertyCode || '—'}
+      </div>
+      <p style="color:#6b7280;font-size:13px;">
+        You can manage availability and inquiries from the owner app at any
+        time. Welcome aboard!
+      </p>
+    </div>
+  `;
+  return send({
+    to,
+    subject,
+    html,
+    text: `${propertyName} (${propertyCode || ''}) is now live on Retreats by Traveon.`,
+  });
+};
+
+module.exports = {
+  send,
+  sendOtp,
+  sendInvite,
+  sendContract,
+  sendSignedContractNotification,
+  sendListingConfirmation,
+};

@@ -14,6 +14,11 @@ const PropertyField = sequelize.define(
     description: { type: DataTypes.TEXT('long'), allowNull: true },
     photoUrls: { type: DataTypes.JSON, defaultValue: [] },
     iteration: { type: DataTypes.INTEGER, defaultValue: 1 },
+    // Snapshots of previous (description + photoUrls) per iteration so the
+    // officer can compare what the auditor uploaded the first time vs. on
+    // each re-upload after an objection.
+    // Entry shape: { iteration, photoUrls, description, snapshotAt, reviewComment }
+    photoHistory: { type: DataTypes.JSON, defaultValue: [] },
     updatedByAuditorAt: { type: DataTypes.DATE, allowNull: true },
   },
   {

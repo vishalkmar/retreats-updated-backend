@@ -6,10 +6,11 @@ const { ok, fail, created } = require('../utils/response');
 const { issueOtp, verifyOtp, OTP_TTL_MIN } = require('../services/userOtp.service');
 const { sendUserOtp, sendUserWelcome } = require('../services/userMailer.service');
 const { normalizePhone } = require('../services/cashfree.service');
-// NOTE: referral coupons for the referee were removed in the v2 referral
-// rewrite (May 2026). Only the referrer earns now, and that fires from the
-// payment confirmation path (creditReferrerForFirstPaid). Nothing referral-
-// related runs from completeProfile any more.
+const { creditReferrerForFirstLogin } = require('../services/referEarn.service');
+// NOTE: v3 referral system (Jun 2026) — referrer is paid the moment the
+// referee completes their profile (effectively "first login"). Booking is
+// no longer the trigger. The payment hook still calls the legacy v2 path
+// as an idempotent safety net.
 
 const normalize = (email) => String(email || '').toLowerCase().trim();
 
@@ -168,10 +169,14 @@ const completeProfile = asyncHandler(async (req, res) => {
     console.error('[user-auth] Welcome email failed:', err.message);
   });
 
-  // v2 referral system: nothing to do here. The referrer payout is fired
-  // from the payment confirmation path (see creditReferrerForFirstPaid in
-  // payment.controller.js). `referrerForBonus` was already linked above via
-  // `user.referredByUserId = referrer.id`.
+  // v3: the moment a referee completes their profile (first login as a
+  // real account) the referrer earns the reward. Fire-and-forget so a
+  // payout hiccup never blocks profile save.
+  if (isFirstCompletion && referrerForBonus) {
+    creditReferrerForFirstLogin({ user }).catch((err) => {
+      console.error('[refer-earn] first-login payout failed:', err.message);
+    });
+  }
 
   return ok(res, { user: publicUser(user) }, 'Profile saved');
 });

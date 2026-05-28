@@ -10,6 +10,7 @@ const {
 } = require('../models');
 const { ok, fail } = require('../../utils/response');
 const { emitToProperty } = require('../services/socket');
+const { notifyUser } = require('../services/notifications');
 const { sendContract } = require('../services/mailer');
 const { generateContractPdf } = require('../services/contractPdf');
 const { uploadContractPdf } = require('../services/contractStorage');
@@ -123,6 +124,13 @@ const decideField = asyncHandler(async (req, res) => {
   if (decision === FIELD_DECISION.REJECTED && !comment?.trim()) {
     return fail(res, 'Raising an objection requires a comment', 400);
   }
+  if (
+    decision === FIELD_DECISION.APPROVED &&
+    approvedForFutureReview === true &&
+    !comment?.trim()
+  ) {
+    return fail(res, 'Approving with objection requires a note', 400);
+  }
 
   const property = await Property.findOne({
     where: { id: propertyId, ...visibilityFilter(req.pwaUser.id) },
@@ -142,8 +150,16 @@ const decideField = asyncHandler(async (req, res) => {
     defaults: { decision: FIELD_DECISION.PENDING },
   });
   review.decision = decision;
-  review.comment = decision === FIELD_DECISION.REJECTED ? comment.trim() : null;
-  review.approvedForFutureReview = decision === FIELD_DECISION.APPROVED && approvedForFutureReview === true;
+  const approveWithObjection =
+    decision === FIELD_DECISION.APPROVED && approvedForFutureReview === true;
+  if (decision === FIELD_DECISION.REJECTED) {
+    review.comment = comment.trim();
+  } else if (approveWithObjection) {
+    review.comment = comment.trim();
+  } else {
+    review.comment = null;
+  }
+  review.approvedForFutureReview = approveWithObjection;
   review.officerId = req.pwaUser.id;
   review.reviewedAt = new Date();
   await review.save();
@@ -163,6 +179,54 @@ const decideField = asyncHandler(async (req, res) => {
     review,
     status: property.status,
   });
+
+  // Notify whoever is responsible for fixing the section. For auditor-
+  // onboarded properties that's the auditor; for self-onboarded ones it's
+  // the owner directly. Notification carries `sectionKey` + `propertyCode`
+  // so the client can deep-link to the exact section editor.
+  const sectionLabel = (
+    require('../constants').SECTION_KEYS.find((s) => s.key === sectionKey)?.label
+    || sectionKey
+  );
+  const notifType = decision === FIELD_DECISION.REJECTED
+    ? 'section_objection'
+    : approveWithObjection
+      ? 'section_approved_objection'
+      : 'section_approved';
+  const notifTitle = decision === FIELD_DECISION.REJECTED
+    ? `Objection on ${sectionLabel}`
+    : approveWithObjection
+      ? `Approved with a note: ${sectionLabel}`
+      : `Approved: ${sectionLabel}`;
+  const notifBody = review.comment || `Property ${property.propertyCode || `#${property.id}`}`;
+  const notifData = {
+    sectionKey,
+    decision: review.decision,
+    propertyCode: property.propertyCode,
+    source: property.source,
+  };
+
+  if (property.source === 'self' && property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: notifType,
+      title: notifTitle,
+      body: notifBody,
+      propertyId: property.id,
+      data: notifData,
+    });
+  } else if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: notifType,
+      title: notifTitle,
+      body: notifBody,
+      propertyId: property.id,
+      data: notifData,
+    });
+  }
 
   return ok(res, { review, status: property.status }, 'Decision recorded');
 });
@@ -247,6 +311,30 @@ const approveProperty = asyncHandler(async (req, res) => {
     status: property.status,
   });
 
+  // Owner does the auditor's job on self-onboarded properties, so they
+  // need this same "Phase 3 approved, go do Phase 4" ping.
+  if (property.source === 'self' && property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'property_approved',
+      title: `Phase 3 approved: ${property.propertyCode || property.name}`,
+      body: 'Complete Phase 4 deep-dive to unlock the contract.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  } else if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'property_approved',
+      title: `Phase 3 approved: ${property.propertyCode || property.name}`,
+      body: 'Complete Phase 4 deep-dive to unlock the contract.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+
   return ok(
     res,
     { property },
@@ -272,7 +360,110 @@ const rejectProperty = asyncHandler(async (req, res) => {
     status: property.status,
     rejectedReason: property.rejectedReason,
   });
+  if (property.source === 'self' && property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'property_rejected',
+      title: `Property rejected: ${property.propertyCode || property.name}`,
+      body: property.rejectedReason,
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  } else if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'property_rejected',
+      title: `Property rejected: ${property.propertyCode || property.name}`,
+      body: property.rejectedReason,
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
   return ok(res, { property }, 'Property rejected');
+});
+
+// --- Contracts dashboard (officer side) --------------------------------
+//
+// Reads every contract this officer has touched, split into three buckets:
+//   - sent     : contract delivered to owner, awaiting their signed copy
+//   - received : owner uploaded a signed copy, awaiting listing finalization
+//   - listed   : property fully completed and live
+//
+// Each row carries property + contract data so the UI can show the PDF
+// preview link, send dates, and the owner-side signed copy.
+const listContracts = asyncHandler(async (req, res) => {
+  const officerId = req.pwaUser.id;
+  const items = await Property.findAll({
+    where: {
+      assignedOfficerId: officerId,
+      status: [
+        PROPERTY_STATUS.FINAL_APPROVED,
+        PROPERTY_STATUS.CONTRACT_SENT,
+        PROPERTY_STATUS.CONTRACT_SIGNED,
+        PROPERTY_STATUS.COMPLETED,
+      ],
+    },
+    include: [
+      { model: Contract, as: 'contract', required: true },
+      { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email'] },
+    ],
+    attributes: [
+      'id', 'name', 'propertyCode', 'status', 'address', 'source',
+      'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt', 'finalApprovedAt',
+    ],
+    order: [
+      [{ model: Contract, as: 'contract' }, 'generatedAt', 'DESC'],
+    ],
+  });
+  const buckets = { sent: [], received: [], listed: [] };
+  for (const p of items) {
+    if (p.status === PROPERTY_STATUS.COMPLETED) buckets.listed.push(p);
+    else if (p.contract?.signedPdfUrl) buckets.received.push(p);
+    else buckets.sent.push(p);
+  }
+  return ok(res, { ...buckets, total: items.length });
+});
+
+// Proxy the generated contract PDF (officer's own copy) so they can preview
+// from inside the dashboard without leaving the app.
+const downloadContractPdf = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
+    include: [{ model: Contract, as: 'contract' }],
+  });
+  if (!property?.contract?.generatedPdfUrl) {
+    return fail(res, 'Contract PDF not ready', 404);
+  }
+  const http = require('http');
+  const https = require('https');
+  const fetchRemote = (url) =>
+    new Promise((resolve, reject) => {
+      const client = url.startsWith('https:') ? https : http;
+      client.get(url, (r) => {
+        if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location) {
+          fetchRemote(r.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        if (r.statusCode !== 200) { r.resume(); return reject(new Error(`status ${r.statusCode}`)); }
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: r.headers['content-type'] }));
+      }).on('error', reject);
+    });
+  try {
+    const { buffer, contentType } = await fetchRemote(property.contract.generatedPdfUrl);
+    res.setHeader('Content-Type', contentType || 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="contract-${property.propertyCode || property.id}.pdf"`,
+    );
+    res.setHeader('Content-Length', buffer.length);
+    return res.send(buffer);
+  } catch (err) {
+    return fail(res, `Could not stream PDF — ${err.message}`, 500);
+  }
 });
 
 module.exports = {
@@ -284,4 +475,6 @@ module.exports = {
   followUpProperty,
   approveProperty,
   rejectProperty,
+  listContracts,
+  downloadContractPdf,
 };

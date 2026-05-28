@@ -37,6 +37,11 @@ const initSocket = (httpServer) => {
   });
 
   io.on('connection', (socket) => {
+    // Every authenticated socket auto-joins its personal room so we can
+    // push targeted notifications without needing a separate join event.
+    if (socket.user?.role && socket.user?.id) {
+      socket.join(`user:${socket.user.role}:${socket.user.id}`);
+    }
     socket.on('property:join', (propertyId) => {
       if (!propertyId) return;
       socket.join(`property:${propertyId}`);
@@ -57,4 +62,11 @@ const emitToProperty = (propertyId, event, payload) => {
   io.to(`property:${propertyId}`).emit(event, payload);
 };
 
-module.exports = { initSocket, getIO, emitToProperty };
+// Push a real-time event to a specific PWA user (auditor/officer/owner).
+// Used by the notification pipeline so the bell updates instantly.
+const emitToUser = (role, userId, event, payload) => {
+  if (!io || !role || !userId) return;
+  io.to(`user:${role}:${userId}`).emit(event, payload);
+};
+
+module.exports = { initSocket, getIO, emitToProperty, emitToUser };

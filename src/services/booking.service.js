@@ -166,16 +166,28 @@ const fetchItem = async (type, id) => {
 
 // Compute the pricing breakdown for a given item + booking inputs. All math
 // is in paise so we never lose a rupee to float rounding.
-const computePricing = ({ item, guestCount = 1, units = 1, walletPaise = 0, couponDiscountPaise = 0 }) => {
+const computePricing = ({
+  item,
+  guestCount = 1,
+  units = 1,
+  roomCount = 1,
+  walletPaise = 0,
+  couponDiscountPaise = 0,
+}) => {
   const unitPricePaise = toPaise(item.price);
 
   // Logic per type:
-  //   room  → unitPrice × nights (guestCount doesn't multiply — it's "per room")
+  //   room  → unitPrice × nights × roomCount  (per room, per night — like MMT)
   //   event → unitPrice × ticket count (guestCount)
-  //   package, addon → unitPrice × guests
+  //   package, addon → unitPrice × guests (per person)
   let quantity;
-  if (item.type === 'room') quantity = Math.max(1, Number(units || 1));
-  else quantity = Math.max(1, Number(guestCount || 1));
+  if (item.type === 'room') {
+    const nights = Math.max(1, Number(units || 1));
+    const rooms = Math.max(1, Number(roomCount || 1));
+    quantity = nights * rooms;
+  } else {
+    quantity = Math.max(1, Number(guestCount || 1));
+  }
 
   const subtotalPaise = unitPricePaise * quantity;
   const taxPaise = Math.round(subtotalPaise * TAX_RATE);

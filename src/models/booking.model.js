@@ -44,6 +44,9 @@ const Booking = sequelize.define(
     guestEmail: { type: DataTypes.STRING(180), allowNull: false },
     guestPhone: { type: DataTypes.STRING(40), allowNull: false },
     guestCount: { type: DataTypes.INTEGER, defaultValue: 1 },
+    // Only meaningful for room bookings — number of rooms booked together.
+    // Multiplies into the room subtotal alongside nights.
+    roomCount: { type: DataTypes.INTEGER, defaultValue: 1 },
 
     specialRequests: { type: DataTypes.TEXT, allowNull: true },
 

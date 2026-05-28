@@ -110,6 +110,16 @@ const runBackgroundDbWork = async () => {
 
   // One-time data migrations run after sync. Each is idempotent.
   try {
+    const { migrate: migratePwaSchema } = require('./scripts/migratePwaSchema');
+    const result = await migratePwaSchema();
+    if (result.changes?.length) {
+      console.log(`[DB] PWA schema fixups: ${result.changes.join('; ')}`);
+    }
+  } catch (err) {
+    console.warn('[DB] PWA schema migration failed (non-fatal):', err.message);
+  }
+
+  try {
     const { migrate: migrateReviews } = require('./scripts/migrateReviews');
     const result = await migrateReviews();
     if (result.copied) {
