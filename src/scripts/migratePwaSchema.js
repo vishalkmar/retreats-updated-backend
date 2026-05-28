@@ -80,6 +80,20 @@ const migrate = async () => {
         summary.changes.push(`pwa_property_fields.photoHistory add failed: ${err.message}`);
       }
     }
+
+    // 4) deepDiveData JSON column — holds the structured fields formerly
+    //    captured in Phase 4 + the per-room records for the rooms section.
+    const deepCol = await describeColumn('pwa_property_fields', 'deepDiveData');
+    if (!deepCol) {
+      try {
+        await sequelize.query(
+          'ALTER TABLE `pwa_property_fields` ADD COLUMN `deepDiveData` JSON NULL',
+        );
+        summary.changes.push('pwa_property_fields.deepDiveData column added');
+      } catch (err) {
+        summary.changes.push(`pwa_property_fields.deepDiveData add failed: ${err.message}`);
+      }
+    }
   }
 
   return summary;

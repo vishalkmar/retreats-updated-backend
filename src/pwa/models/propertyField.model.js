@@ -19,6 +19,12 @@ const PropertyField = sequelize.define(
     // each re-upload after an objection.
     // Entry shape: { iteration, photoUrls, description, snapshotAt, reviewComment }
     photoHistory: { type: DataTypes.JSON, defaultValue: [] },
+    // Structured "deep-dive" fields per section — formerly Phase 4. Stored
+    // as a free-form JSON blob keyed by PHASE4_SCHEMA[sectionKey]. The
+    // Rooms section also keeps its per-room records here under
+    // `deepDiveData.rooms`, room-type categories under `deepDiveData.categories`,
+    // and the window-room count under `deepDiveData.windowRooms`.
+    deepDiveData: { type: DataTypes.JSON, defaultValue: {} },
     updatedByAuditorAt: { type: DataTypes.DATE, allowNull: true },
   },
   {

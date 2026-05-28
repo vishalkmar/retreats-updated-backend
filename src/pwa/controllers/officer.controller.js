@@ -279,57 +279,122 @@ const followUpProperty = asyncHandler(async (req, res) => {
   return ok(res, { property }, 'Moved to follow-up');
 });
 
-// --- Phase 3 approve (semi-approved; awaits Phase 4 deep-dive) ---------
+// --- Final approve (Phase 3 + deep-dive merged) ------------------------
 //
-// What used to be the "Final approve" step is now Phase 3 approve only.
-// It just locks in Phase 3 — no contract PDF is generated here. The
-// auditor must complete Phase 4 deep-dive before the officer's final
-// approval (which actually triggers the contract). This means the
-// `approved` status is conceptually "semi-approved".
+// Phase 4 has been folded into Phase 3 — the structured "deep-dive" fields
+// now live on each PropertyField.deepDiveData and are reviewed alongside
+// the section's photos + notes. So this single approval IS the final
+// approval: it flips status to FINAL_APPROVED and immediately generates
+// the contract PDF, then for self-onboarded properties also emails it
+// straight to the owner (matching the old Phase 4 finalApprove behaviour).
 
 const approveProperty = asyncHandler(async (req, res) => {
+  const { Contract } = require('../models');
+  const { generateContractPdf } = require('../services/contractPdf');
+  const { uploadContractPdf } = require('../services/contractStorage');
+  const { sendContract } = require('../services/mailer');
+
   const property = await Property.findOne({
     where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
     include: propertyInclude(),
   });
   if (!property) return fail(res, 'Property not found', 404);
 
-  // All non-pending decisions, no objections.
   const reviews = await FieldReview.findAll({ where: { propertyId: property.id } });
   const hasRejected = reviews.some((r) => r.decision === FIELD_DECISION.REJECTED);
   const hasPending = reviews.some((r) => r.decision === FIELD_DECISION.PENDING);
   if (hasRejected) return fail(res, 'Cannot approve while any section has an objection', 400);
   if (hasPending) return fail(res, 'All sections must be marked approved before final approval', 400);
 
-  property.status = PROPERTY_STATUS.APPROVED;
-  property.approvedAt = new Date();
+  property.status = PROPERTY_STATUS.FINAL_APPROVED;
+  property.approvedAt = property.approvedAt || new Date();
+  property.finalApprovedAt = new Date();
   property.assignedOfficerId = property.assignedOfficerId || req.pwaUser.id;
   await property.save();
+
+  // Generate the contract PDF on the spot. Phase 4 used to do this, but
+  // since we collapsed the two phases, the approval here IS the trigger.
+  const officer = await Officer.findByPk(property.assignedOfficerId);
+  let pdfBuffer = null;
+  try {
+    pdfBuffer = await generateContractPdf({
+      property,
+      auditor: property.auditor,
+      officerName: officer?.name,
+    });
+  } catch (err) {
+    console.error('[PWA] PDF generation failed:', err.message);
+  }
+
+  let contract = await Contract.findOne({ where: { propertyId: property.id } });
+  if (!contract) contract = await Contract.create({ propertyId: property.id });
+
+  if (pdfBuffer) {
+    try {
+      const url = await uploadContractPdf({
+        buffer: pdfBuffer,
+        filename: `contract-${property.propertyCode || property.id}.pdf`,
+      });
+      if (url) contract.generatedPdfUrl = url;
+    } catch (err) {
+      console.warn('[PWA] uploadContractPdf failed:', err.message);
+    }
+  }
+  contract.generatedAt = new Date();
+  contract.sentAt = null;
+  contract.releasedByAuditorId = null;
+  await contract.save();
+
+  // Self-onboarded owners get the contract emailed straight away — no
+  // auditor middleman to release it.
+  let releasedDirectly = false;
+  if (property.source === 'self' && pdfBuffer) {
+    try {
+      await sendContract({
+        to: property.ownerEmail,
+        ownerName: property.ownerName,
+        propertyName: property.name,
+        propertyCode: property.propertyCode,
+        pdfBuffer,
+        pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
+      });
+      contract.sentAt = new Date();
+      await contract.save();
+      property.status = PROPERTY_STATUS.CONTRACT_SENT;
+      await property.save();
+      releasedDirectly = true;
+    } catch (err) {
+      console.warn('[PWA] auto contract release to owner failed:', err.message);
+    }
+  }
 
   emitToProperty(property.id, 'property:status', {
     propertyId: property.id,
     status: property.status,
   });
 
-  // Owner does the auditor's job on self-onboarded properties, so they
-  // need this same "Phase 3 approved, go do Phase 4" ping.
-  if (property.source === 'self' && property.ownerId) {
-    notifyUser({
-      role: 'owner',
-      userId: property.ownerId,
-      type: 'property_approved',
-      title: `Phase 3 approved: ${property.propertyCode || property.name}`,
-      body: 'Complete Phase 4 deep-dive to unlock the contract.',
-      propertyId: property.id,
-      data: { propertyCode: property.propertyCode, source: property.source },
-    });
-  } else if (property.auditorId) {
+  if (property.auditorId) {
     notifyUser({
       role: 'auditor',
       userId: property.auditorId,
-      type: 'property_approved',
-      title: `Phase 3 approved: ${property.propertyCode || property.name}`,
-      body: 'Complete Phase 4 deep-dive to unlock the contract.',
+      type: 'contract_generated',
+      title: `Contract ready: ${property.propertyCode || property.name}`,
+      body: 'Final approved. Preview the PDF, then send to the owner.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  if (property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: releasedDirectly ? 'contract_sent_to_owner' : 'contract_generated',
+      title: releasedDirectly
+        ? `Contract sent: ${property.propertyCode || property.name}`
+        : `Final approved: ${property.propertyCode || property.name}`,
+      body: releasedDirectly
+        ? 'Check your inbox — the contract is attached.'
+        : 'The auditor will share the signed contract with you shortly.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
@@ -337,8 +402,10 @@ const approveProperty = asyncHandler(async (req, res) => {
 
   return ok(
     res,
-    { property },
-    'Phase 3 approved — waiting on auditor to complete Phase 4 deep-dive',
+    { property, contract },
+    releasedDirectly
+      ? 'Final approved — contract emailed to the owner'
+      : 'Final approved — contract generated and handed to the auditor for release',
   );
 });
 

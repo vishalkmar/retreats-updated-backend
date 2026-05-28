@@ -19,6 +19,11 @@ router.post('/properties/:id/generate-id', ctrl.generateId);
 router.put('/properties/:id/sections/:sectionKey', sectionUpload, ctrl.upsertSection);
 router.post('/properties/:id/submit', ctrl.submitForReview);
 
+// Single-photo helper for the per-room photo blocks inside the rooms
+// section editor — each pick uploads eagerly so the rest of the form just
+// references URLs.
+router.post('/properties/:id/upload-one', upload.single('photo'), ctrl.uploadOnePhoto);
+
 // Reads
 router.get('/properties', ctrl.listMyProperties);
 router.get('/properties/:id', ctrl.getMyProperty);

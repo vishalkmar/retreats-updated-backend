@@ -80,8 +80,26 @@ const loadOwnedProperty = async (req, where) =>
   });
 
 const minPhotosForSection = (property, sectionKey) => {
-  const roomBased = Math.ceil((Number(property.numberOfRooms) || 0) * 0.5);
-  return sectionKey === 'rooms' ? Math.max(3, roomBased || 3) : 3;
+  if (sectionKey === 'trainer') return 2;
+  return sectionKey === 'rooms' ? 0 : 3;
+};
+
+const ROOM_MANDATORY_PHOTOS = ['entrance', 'washroom', 'bedsheet', 'tv', 'almirah'];
+
+const roomsSectionComplete = (property, field) => {
+  if (!field?.description?.trim()) return false;
+  const total = Number(property.numberOfRooms) || 0;
+  const required = Math.ceil(total / 2);
+  const data = field.deepDiveData || {};
+  const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+  const categories = Array.isArray(data.categories) ? data.categories : [];
+  const categoryTotal = categories.reduce((sum, cat) => sum + (Number(cat.count) || 0), 0);
+  return rooms.length >= required
+    && categoryTotal === total
+    && rooms.every((room) => (
+      room.category?.trim()
+      && ROOM_MANDATORY_PHOTOS.every((key) => (room.photos?.[key] || []).length > 0)
+    ));
 };
 
 // -- Dashboard list / detail --------------------------------------------
@@ -376,6 +394,18 @@ const upsertSelfSection = asyncHandler(async (req, res) => {
     ? String(req.body.removeUrls).split(',').filter(Boolean)
     : [];
 
+  let deepDiveData = null;
+  if (req.body.deepDiveData !== undefined && req.body.deepDiveData !== '') {
+    try {
+      deepDiveData = typeof req.body.deepDiveData === 'string'
+        ? JSON.parse(req.body.deepDiveData)
+        : req.body.deepDiveData;
+      if (deepDiveData && typeof deepDiveData !== 'object') deepDiveData = null;
+    } catch {
+      return fail(res, 'deepDiveData must be valid JSON', 400);
+    }
+  }
+
   let field = await PropertyField.findOne({
     where: { propertyId: property.id, sectionKey },
   });
@@ -412,6 +442,7 @@ const upsertSelfSection = asyncHandler(async (req, res) => {
       photoUrls: merged,
       iteration: 1,
       photoHistory: [],
+      deepDiveData: deepDiveData || {},
       updatedByAuditorAt: new Date(),
     });
   } else {
@@ -421,6 +452,7 @@ const upsertSelfSection = asyncHandler(async (req, res) => {
         iteration: field.iteration,
         photoUrls: existingPhotos,
         description: field.description || null,
+        deepDiveData: field.deepDiveData || null,
         snapshotAt: field.updatedByAuditorAt || field.updatedAt || new Date(),
         reviewComment: wasRejected ? existingReview?.comment || null : null,
       });
@@ -429,6 +461,7 @@ const upsertSelfSection = asyncHandler(async (req, res) => {
     }
     field.description = description ?? field.description;
     field.photoUrls = merged;
+    if (deepDiveData !== null) field.deepDiveData = deepDiveData;
     field.updatedByAuditorAt = new Date();
     await field.save();
   }
@@ -476,6 +509,7 @@ const submitSelfForReview = asyncHandler(async (req, res) => {
     .filter((s) => s.required)
     .filter((s) => {
       const f = byKey[s.key];
+      if (s.key === 'rooms') return !roomsSectionComplete(property, f);
       return !f || !f.description?.trim() || (f.photoUrls || []).length < minPhotosForSection(property, s.key);
     })
     .map((s) => s.label);
@@ -705,6 +739,16 @@ const respondToLead = asyncHandler(async (req, res) => {
   return ok(res, { lead: fresh }, `Marked as ${decision === 'yes' ? 'available' : 'not available'}`);
 });
 
+// Standalone per-photo helper for the owner-self rooms section editor.
+// Same intent as the auditor's upload-one — eager upload returns a URL
+// that the editor stores in deepDiveData.rooms[i].photos[cat].
+const uploadOneSelfPhoto = asyncHandler(async (req, res) => {
+  if (!req.file) return fail(res, 'No file', 400);
+  const url = getUploadedUrl(req.file);
+  if (!url) return fail(res, 'Could not store file', 500);
+  return ok(res, { url });
+});
+
 module.exports = {
   listMyProperties,
   getOneByCode,
@@ -717,6 +761,7 @@ module.exports = {
   generateSelfId,
   upsertSelfSection,
   submitSelfForReview,
+  uploadOneSelfPhoto,
   getSelfPhase4,
   upsertSelfPhase4Section,
   submitSelfPhase4,

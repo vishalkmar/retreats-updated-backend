@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { Auditor, Officer, PropertyOwner, Salesperson } = require('../models');
+const { Auditor, Officer, PropertyOwner } = require('../models');
 
 // Verifies a PWA JWT (issued with { pwa: true, role, id }) and loads the
 // associated record onto req. `requireRoles(...)` is a convenience wrapper:
@@ -22,7 +22,6 @@ const authenticatePwa = async (req, res, next) => {
     if (decoded.role === 'auditor') user = await Auditor.findByPk(decoded.id);
     else if (decoded.role === 'officer') user = await Officer.findByPk(decoded.id);
     else if (decoded.role === 'owner') user = await PropertyOwner.findByPk(decoded.id);
-    else if (decoded.role === 'salesperson') user = await Salesperson.findByPk(decoded.id);
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Account no longer exists' });

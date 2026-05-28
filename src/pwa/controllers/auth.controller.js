@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const { Auditor, Officer, PropertyOwner, Property, Salesperson } = require('../models');
+const { Auditor, Officer, PropertyOwner, Property } = require('../models');
 const { signToken } = require('../../utils/jwt');
 const { ok, fail } = require('../../utils/response');
 const { issueOtp, verifyOtp, dispatchOtp, IS_DEV } = require('../services/otp');
@@ -7,11 +7,10 @@ const { issueOtp, verifyOtp, dispatchOtp, IS_DEV } = require('../services/otp');
 const findUserByRole = async (role, email) => {
   if (role === 'auditor') return Auditor.findOne({ where: { email } });
   if (role === 'officer') return Officer.findOne({ where: { email } });
-  if (role === 'salesperson') return Salesperson.findOne({ where: { email } });
   return null;
 };
 
-const PASSWORD_LOGIN_ROLES = ['auditor', 'officer', 'salesperson'];
+const PASSWORD_LOGIN_ROLES = ['auditor', 'officer'];
 
 const issuePwaToken = (role, id) =>
   signToken({ pwa: true, role, id });
@@ -237,6 +236,7 @@ const ownerEmailRequestOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
   if (!email) return fail(res, 'Email is required', 400);
   const normalized = email.toLowerCase().trim();
+  const owner = await PropertyOwner.findOne({ where: { email: normalized } });
 
   const code = await issueOtp({
     email: normalized,
@@ -251,6 +251,7 @@ const ownerEmailRequestOtp = asyncHandler(async (req, res) => {
     res,
     {
       email: normalized,
+      needsProfile: !owner,
       emailDelivered: delivered,
       ...(IS_DEV && devCode ? { devCode, emailError } : {}),
     },

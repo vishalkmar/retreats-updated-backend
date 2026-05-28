@@ -7,7 +7,8 @@ const contractUpload = buildUploader('pwa-contracts', {
   allowed: /pdf|jpg|jpeg|png|application\/pdf|image\/jpeg|image\/png/,
   message: 'Only PDF, JPG, JPEG, and PNG files are allowed',
 });
-const sectionUpload = buildUploader('pwa-audits').array('photos', 50);
+const sectionUploader = buildUploader('pwa-audits');
+const sectionUpload = sectionUploader.array('photos', 50);
 
 router.use(authenticatePwa, requireRoles('owner'));
 
@@ -22,6 +23,8 @@ router.post('/self-properties', ctrl.createSelfProperty);
 router.post('/self-properties/:id/generate-id', ctrl.generateSelfId);
 router.put('/self-properties/:id/sections/:sectionKey', sectionUpload, ctrl.upsertSelfSection);
 router.post('/self-properties/:id/submit', ctrl.submitSelfForReview);
+// Single-photo helper for per-room blocks on owner self-onboarding.
+router.post('/self-properties/:id/upload-one', sectionUploader.single('photo'), ctrl.uploadOneSelfPhoto);
 router.get('/self-properties/:id/phase4', ctrl.getSelfPhase4);
 router.put('/self-properties/:id/phase4/:sectionKey', ctrl.upsertSelfPhase4Section);
 router.post('/self-properties/:id/phase4/submit', ctrl.submitSelfPhase4);
