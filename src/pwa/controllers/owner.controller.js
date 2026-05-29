@@ -334,7 +334,7 @@ const downloadContractPdfByCode = asyncHandler(async (req, res) => {
 const createSelfProperty = asyncHandler(async (req, res) => {
   const {
     name, address, locationText, latitude, longitude,
-    numberOfRooms, pricing,
+    numberOfRooms,
   } = req.body;
   if (!name?.trim() || !address?.trim()) {
     return fail(res, 'Name and address are required', 400);
@@ -357,7 +357,6 @@ const createSelfProperty = asyncHandler(async (req, res) => {
     ownerEmail: owner.email,
     ownerPhone: owner.phone || null,
     numberOfRooms: numberOfRooms ? parseInt(numberOfRooms, 10) : null,
-    pricing: pricing?.trim() || null,
     status: PROPERTY_STATUS.PHASE1_DONE,
     phase: 2,
   });

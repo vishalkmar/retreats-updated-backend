@@ -70,7 +70,6 @@ const createPhase1 = asyncHandler(async (req, res) => {
     ownerEmail,
     ownerPhone,
     numberOfRooms,
-    pricing,
   } = req.body;
 
   if (!name?.trim() || !address?.trim() || !ownerName?.trim() || !ownerEmail?.trim()) {
@@ -92,7 +91,6 @@ const createPhase1 = asyncHandler(async (req, res) => {
     ownerEmail: ownerEmail.toLowerCase().trim(),
     ownerPhone: ownerPhone?.trim() || null,
     numberOfRooms: numberOfRooms ? parseInt(numberOfRooms, 10) : null,
-    pricing: pricing?.trim() || null,
     status: PROPERTY_STATUS.PHASE1_DONE,
     phase: 2,
   });
