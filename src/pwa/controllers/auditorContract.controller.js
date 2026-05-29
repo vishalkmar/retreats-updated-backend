@@ -2,13 +2,12 @@ const asyncHandler = require('express-async-handler');
 const http = require('http');
 const https = require('https');
 const { Op } = require('sequelize');
-const { Property, Contract, Officer, Auditor } = require('../models');
+const { Property, Contract, Auditor, Officer } = require('../models');
 const { ok, fail } = require('../../utils/response');
+const { getUploadedUrl } = require('../../utils/uploads');
 const { sendContract } = require('../services/mailer');
 const { emitToProperty } = require('../services/socket');
 const { notifyUser } = require('../services/notifications');
-const { generateContractPdf } = require('../services/contractPdf');
-const { uploadContractPdf } = require('../services/contractStorage');
 const { PROPERTY_STATUS } = require('../constants');
 
 /*
@@ -36,7 +35,6 @@ const listForAuditor = asyncHandler(async (req, res) => {
         // Only properties whose Phase 4 has also been accepted — contract
         // is only generated after FINAL_APPROVED.
         PROPERTY_STATUS.FINAL_APPROVED,
-        PROPERTY_STATUS.CONTRACT_SENT,
         PROPERTY_STATUS.CONTRACT_SIGNED,
         PROPERTY_STATUS.COMPLETED,
       ],
@@ -45,14 +43,9 @@ const listForAuditor = asyncHandler(async (req, res) => {
   const items = await Property.findAll({
     where,
     include: [
-      {
-        model: Contract,
-        as: 'contract',
-        required: true,            // only properties that have a contract row
-        where: { generatedAt: { [Op.ne]: null } },
-      },
+      { model: Contract, as: 'contract', required: false },
     ],
-    attributes: ['id', 'name', 'propertyCode', 'status', 'address', 'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt'],
+    attributes: ['id', 'name', 'propertyCode', 'status', 'address', 'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt', 'finalApprovedAt'],
     order: [
       // Pending (no sentAt) first
       [{ model: Contract, as: 'contract' }, 'sentAt', 'ASC'],
@@ -60,17 +53,18 @@ const listForAuditor = asyncHandler(async (req, res) => {
     ],
   });
 
-  const pending = items.filter((p) => !p.contract?.sentAt);
-  const released = items.filter((p) => p.contract?.sentAt);
+  const pending = items.filter((p) => p.status === PROPERTY_STATUS.FINAL_APPROVED);
+  const finalReady = items.filter((p) => p.status === PROPERTY_STATUS.CONTRACT_SIGNED && p.contract?.signedPdfUrl);
+  const released = items.filter((p) => [PROPERTY_STATUS.CONTRACT_SENT, PROPERTY_STATUS.COMPLETED].includes(p.status));
 
-  return ok(res, { pending, released, total: items.length });
+  return ok(res, { pending, finalReady, released, total: items.length });
 });
 
 const getOne = asyncHandler(async (req, res) => {
   const property = await Property.findOne({
     where: { id: req.params.propertyId, auditorId: req.pwaUser.id },
     include: contractInclude(),
-    attributes: ['id', 'name', 'propertyCode', 'status', 'address', 'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt'],
+    attributes: ['id', 'name', 'propertyCode', 'status', 'address', 'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt', 'finalApprovedAt'],
   });
   if (!property || !property.contract) return fail(res, 'Contract not found', 404);
   return ok(res, { property, contract: property.contract });
@@ -113,6 +107,93 @@ const downloadPdf = asyncHandler(async (req, res) => {
   return res.send(buffer);
 });
 
+const uploadSignedByAuditor = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.propertyId, auditorId: req.pwaUser.id },
+    include: [
+      { model: Contract, as: 'contract' },
+      { model: Auditor, as: 'auditor' },
+      { model: Officer, as: 'officer', attributes: ['id', 'name', 'email'] },
+    ],
+  });
+  if (!property) return fail(res, 'Property not found', 404);
+  if (property.status !== PROPERTY_STATUS.FINAL_APPROVED) {
+    return fail(res, 'Contract can be uploaded only after final approval', 400);
+  }
+  if (!req.file) return fail(res, 'Upload a contract PDF', 400);
+
+  const url = getUploadedUrl(req.file);
+  if (!url) return fail(res, 'Could not store contract', 500);
+
+  let contract = property.contract;
+  if (!contract) contract = await Contract.create({ propertyId: property.id });
+  contract.generatedPdfUrl = url;
+  contract.generatedAt = new Date();
+  contract.sentAt = null;
+  contract.releasedByAuditorId = null;
+  contract.signedPdfUrl = null;
+  contract.signedOriginalName = null;
+  contract.signedMimeType = null;
+  contract.signedAt = null;
+  contract.ownerSignedByEmail = null;
+  contract.finalPdfUrl = null;
+  contract.finalSignedAt = null;
+  contract.finalSentToAuditorAt = null;
+
+  let emailDelivered = false;
+  let emailError = null;
+  try {
+    await sendContract({
+      to: property.ownerEmail,
+      ownerName: property.ownerName,
+      propertyName: property.name,
+      propertyCode: property.propertyCode,
+      pdfBuffer: req.file.emailAttachmentBuffer,
+      pdfUrl: url,
+      pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
+      subject: `Please e-sign contract for ${property.name} (${property.propertyCode})`,
+      heading: 'Please e-sign your contract',
+      instructions: 'The contract is attached as a PDF. Please digitally sign it, then upload the signed copy in your owner portal.',
+    });
+    emailDelivered = true;
+  } catch (err) {
+    emailError = err.message;
+    console.warn('[PWA] contract email send failed:', err.message);
+    return fail(res, `Email send failed - ${err.message}`, 500);
+  }
+  contract.sentAt = new Date();
+  contract.releasedByAuditorId = req.pwaUser.id;
+  await contract.save();
+
+  property.status = PROPERTY_STATUS.CONTRACT_SENT;
+  await property.save();
+
+  if (property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'contract_sent_to_owner',
+      title: `Contract sent: ${property.propertyCode || property.name}`,
+      body: 'Check your email, e-sign the PDF, then upload it in your portal.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  if (property.assignedOfficerId) {
+    notifyUser({
+      role: 'officer',
+      userId: property.assignedOfficerId,
+      type: 'contract_sent_to_owner',
+      title: `Contract sent by auditor: ${property.propertyCode || property.name}`,
+      body: `Emailed to ${property.ownerEmail}.`,
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+  return ok(res, { property, contract, emailDelivered, emailError }, 'Contract sent to owner for e-sign');
+});
+
 const sendToOwner = asyncHandler(async (req, res) => {
   const property = await Property.findOne({
     where: { id: req.params.propertyId, auditorId: req.pwaUser.id },
@@ -123,46 +204,14 @@ const sendToOwner = asyncHandler(async (req, res) => {
   });
   if (!property) return fail(res, 'Property not found', 404);
 
-  // Allow a re-send only if the previous attempt never reached the owner.
-  // Once the owner has actually received the email (sentAt set), we don't
-  // re-send from this endpoint.
   if (property.contract?.sentAt) {
-    return fail(res, 'Contract was already sent to the owner', 400);
+    // Initial contract sentAt is already set in this flow; final completion is
+    // allowed after the owner uploads their signed copy.
+  }
+  if (!property.contract?.signedPdfUrl) {
+    return fail(res, 'Owner e-signed contract is not uploaded yet', 400);
   }
 
-  // Try to source the PDF from Cloudinary first; on any failure (URL
-  // missing, Cloudinary unconfigured, fetch timeout), regenerate it locally
-  // so a stuck contract never blocks the auditor from sending.
-  let pdfBuffer = null;
-  if (property.contract?.generatedPdfUrl) {
-    try {
-      const { buffer } = await fetchRemoteBuffer(property.contract.generatedPdfUrl);
-      pdfBuffer = buffer;
-    } catch (err) {
-      console.warn('[PWA] could not fetch stored PDF, regenerating:', err.message);
-    }
-  }
-  if (!pdfBuffer) {
-    try {
-      const officer = property.assignedOfficerId
-        ? await Officer.findByPk(property.assignedOfficerId)
-        : null;
-      pdfBuffer = await generateContractPdf({
-        property,
-        auditor: property.auditor,
-        officerName: officer?.name,
-      });
-    } catch (err) {
-      return fail(res, `Could not regenerate contract PDF — ${err.message}`, 500);
-    }
-  }
-  if (!pdfBuffer) {
-    return fail(res, 'No contract PDF available to send', 500);
-  }
-
-  // Try to deliver. In dev, a Brevo outage shouldn't stop the auditor from
-  // releasing the contract — we mark it sent so the owner login flow
-  // becomes available, and surface the email error in the response.
   let emailDelivered = false;
   let emailError = null;
   try {
@@ -171,21 +220,19 @@ const sendToOwner = asyncHandler(async (req, res) => {
       ownerName: property.ownerName,
       propertyName: property.name,
       propertyCode: property.propertyCode,
-      pdfBuffer,
-      pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
+      pdfUrl: property.contract.signedPdfUrl,
+      pdfFilename: `final-contract-${property.propertyCode || property.id}.pdf`,
+      subject: `Final signed contract for ${property.name} (${property.propertyCode})`,
+      heading: 'Final signed contract',
+      instructions: 'The fully signed contract is attached for your records. Onboarding is complete.',
     });
     emailDelivered = true;
   } catch (err) {
     emailError = err.message;
     console.warn('[PWA] contract email send failed:', err.message);
-    if (process.env.NODE_ENV === 'production') {
-      return fail(res, `Email send failed — ${err.message}`, 500);
-    }
-    // Fall through in dev — contract still gets marked sent below.
+    return fail(res, `Email send failed - ${err.message}`, 500);
   }
 
-  // Make sure we have a contract row even if the original finalApprove
-  // path skipped one (defensive — keeps the rest of the flow consistent).
   let contract = property.contract;
   if (!contract) {
     contract = await Contract.create({ propertyId: property.id });
@@ -193,25 +240,13 @@ const sendToOwner = asyncHandler(async (req, res) => {
   }
   contract.sentAt = new Date();
   contract.releasedByAuditorId = req.pwaUser.id;
-  if (!contract.generatedAt) contract.generatedAt = new Date();
+  contract.finalPdfUrl = contract.signedPdfUrl;
+  contract.finalOriginalName = contract.signedOriginalName;
+  contract.finalMimeType = contract.signedMimeType;
+  contract.finalSignedAt = contract.signedAt || new Date();
   await contract.save();
 
-  // Best-effort: backfill the Cloudinary URL so the auditor's preview works
-  // on later visits. Never block the response on this.
-  if (!contract.generatedPdfUrl) {
-    uploadContractPdf({
-      buffer: pdfBuffer,
-      filename: `contract-${property.propertyCode || property.id}.pdf`,
-    })
-      .then(async (url) => {
-        if (!url) return;
-        contract.generatedPdfUrl = url;
-        await contract.save();
-      })
-      .catch((err) => console.warn('[PWA] background contract upload failed:', err.message));
-  }
-
-  property.status = PROPERTY_STATUS.CONTRACT_SENT;
+  property.status = PROPERTY_STATUS.COMPLETED;
   await property.save();
 
   emitToProperty(property.id, 'property:status', {
@@ -226,9 +261,20 @@ const sendToOwner = asyncHandler(async (req, res) => {
       role: 'officer',
       userId: property.assignedOfficerId,
       type: 'contract_sent_to_owner',
-      title: `Contract sent to owner: ${property.propertyCode || property.name}`,
+      title: `Final contract sent to owner: ${property.propertyCode || property.name}`,
       body: `Emailed to ${property.ownerEmail}.`,
       propertyId: property.id,
+    });
+  }
+  if (property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'contract_signed',
+      title: `Final contract ready: ${property.propertyCode || property.name}`,
+      body: 'The final e-signed contract has been emailed and is available in your portal.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
     });
   }
 
@@ -236,8 +282,8 @@ const sendToOwner = asyncHandler(async (req, res) => {
     res,
     { property, contract: property.contract, emailDelivered, emailError },
     emailDelivered
-      ? 'Contract sent to owner'
-      : 'Contract marked sent — email service was unreachable, ask the owner to log in directly',
+      ? 'Final contract sent to owner'
+      : 'Final contract marked sent - email service was unreachable',
   );
 });
 
@@ -245,5 +291,6 @@ module.exports = {
   listForAuditor,
   getOne,
   downloadPdf,
+  uploadSignedByAuditor,
   sendToOwner,
 };

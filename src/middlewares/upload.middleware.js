@@ -78,6 +78,9 @@ const cloudinaryStreamUploader = (subfolder) => async (req, res, next) => {
     const uploadOne = async (file) => {
       if (!file?.buffer) return;
       const resourceType = guessResourceType(file);
+      if (resourceType === 'raw') {
+        file.emailAttachmentBuffer = Buffer.from(file.buffer);
+      }
       const result = await streamUploadBuffer(file.buffer, {
         folder,
         resourceType,

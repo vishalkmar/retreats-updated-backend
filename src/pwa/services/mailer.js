@@ -160,19 +160,29 @@ const sendInvite = ({ to, name, role, tempPassword, loginUrl }) => {
   return send({ to, subject, html, text: `Welcome! Temp password: ${tempPassword}` });
 };
 
-const sendContract = ({ to, ownerName, propertyName, propertyCode, pdfBuffer, pdfFilename }) => {
-  const subject = `Contract for ${propertyName} (${propertyCode}) - Traveon Retreats`;
+const sendContract = async ({
+  to,
+  ownerName,
+  propertyName,
+  propertyCode,
+  pdfBuffer,
+  pdfUrl,
+  pdfFilename,
+  subject,
+  heading = 'Your contract is ready',
+  intro,
+  instructions,
+}) => {
+  const attachmentBuffer = pdfBuffer || (pdfUrl ? await downloadUrl(pdfUrl) : null);
+  const mailSubject = subject || `Contract for ${propertyName} (${propertyCode}) - Traveon Retreats`;
   const html = `
     <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
-      <h2 style="margin:0 0 12px;color:#0f766e;">Your contract is ready</h2>
+      <h2 style="margin:0 0 12px;color:#0f766e;">${heading}</h2>
       <p style="color:#374151;line-height:1.55;">
-        Hello${ownerName ? ` ${ownerName}` : ''}, your property
-        <strong>${propertyName}</strong> has been approved.
+        Hello${ownerName ? ` ${ownerName}` : ''}, ${intro || `your property <strong>${propertyName}</strong> has been approved.`}
       </p>
       <p style="color:#374151;line-height:1.55;">
-        The contract is attached to this email as a PDF. Please print it, sign it,
-        and upload the signed copy in the Traveon Retreats app using your
-        Property ID below.
+        ${instructions || 'The contract is attached to this email as a PDF. Please print it, sign it, and upload the signed copy in the Traveon Retreats app using your Property ID below.'}
       </p>
       <div style="font-size:18px;font-weight:700;letter-spacing:2px;background:#f0fdfa;padding:14px 18px;text-align:center;border-radius:10px;color:#0f766e;margin:18px 0;">
         Property ID: ${propertyCode}
@@ -182,10 +192,10 @@ const sendContract = ({ to, ownerName, propertyName, propertyCode, pdfBuffer, pd
   `;
   return send({
     to,
-    subject,
+    subject: mailSubject,
     html,
-    attachments: pdfBuffer
-      ? [{ filename: pdfFilename || `contract-${propertyCode}.pdf`, content: pdfBuffer }]
+    attachments: attachmentBuffer
+      ? [{ filename: pdfFilename || `contract-${propertyCode}.pdf`, content: attachmentBuffer }]
       : undefined,
   });
 };

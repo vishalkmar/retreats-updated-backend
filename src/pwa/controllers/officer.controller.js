@@ -6,14 +6,12 @@ const {
   FieldReview,
   Contract,
   Auditor,
-  Officer,
 } = require('../models');
 const { ok, fail } = require('../../utils/response');
+const { getUploadedUrl } = require('../../utils/uploads');
 const { emitToProperty } = require('../services/socket');
 const { notifyUser } = require('../services/notifications');
-const { sendContract } = require('../services/mailer');
-const { generateContractPdf } = require('../services/contractPdf');
-const { uploadContractPdf } = require('../services/contractStorage');
+const { send, sendContract } = require('../services/mailer');
 const { SECTION_KEY_SET, PROPERTY_STATUS, FIELD_DECISION } = require('../constants');
 
 // All routes here use authenticatePwa + requireRoles('officer') in the
@@ -27,6 +25,15 @@ const propertyInclude = () => [
   { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email', 'phone', 'profilePhotoUrl'] },
   { model: Contract, as: 'contract' },
 ];
+
+const contractFilename = (property, suffix = 'contract') =>
+  `${suffix}-${property.propertyCode || property.id}.pdf`;
+
+const getOrCreateContract = async (propertyId) => {
+  let contract = await Contract.findOne({ where: { propertyId } });
+  if (!contract) contract = await Contract.create({ propertyId });
+  return contract;
+};
 
 const visibilityFilter = (officerId) => ({
   [Op.or]: [
@@ -289,11 +296,6 @@ const followUpProperty = asyncHandler(async (req, res) => {
 // straight to the owner (matching the old Phase 4 finalApprove behaviour).
 
 const approveProperty = asyncHandler(async (req, res) => {
-  const { Contract } = require('../models');
-  const { generateContractPdf } = require('../services/contractPdf');
-  const { uploadContractPdf } = require('../services/contractStorage');
-  const { sendContract } = require('../services/mailer');
-
   const property = await Property.findOne({
     where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
     include: propertyInclude(),
@@ -312,74 +314,41 @@ const approveProperty = asyncHandler(async (req, res) => {
   property.assignedOfficerId = property.assignedOfficerId || req.pwaUser.id;
   await property.save();
 
-  // Generate the contract PDF on the spot. Phase 4 used to do this, but
-  // since we collapsed the two phases, the approval here IS the trigger.
-  const officer = await Officer.findByPk(property.assignedOfficerId);
-  let pdfBuffer = null;
-  try {
-    pdfBuffer = await generateContractPdf({
-      property,
-      auditor: property.auditor,
-      officerName: officer?.name,
-    });
-  } catch (err) {
-    console.error('[PWA] PDF generation failed:', err.message);
-  }
-
-  let contract = await Contract.findOne({ where: { propertyId: property.id } });
-  if (!contract) contract = await Contract.create({ propertyId: property.id });
-
-  if (pdfBuffer) {
-    try {
-      const url = await uploadContractPdf({
-        buffer: pdfBuffer,
-        filename: `contract-${property.propertyCode || property.id}.pdf`,
-      });
-      if (url) contract.generatedPdfUrl = url;
-    } catch (err) {
-      console.warn('[PWA] uploadContractPdf failed:', err.message);
-    }
-  }
-  contract.generatedAt = new Date();
-  contract.sentAt = null;
-  contract.releasedByAuditorId = null;
-  await contract.save();
-
-  // Self-onboarded owners get the contract emailed straight away — no
-  // auditor middleman to release it.
-  let releasedDirectly = false;
-  if (property.source === 'self' && pdfBuffer) {
-    try {
-      await sendContract({
-        to: property.ownerEmail,
-        ownerName: property.ownerName,
-        propertyName: property.name,
-        propertyCode: property.propertyCode,
-        pdfBuffer,
-        pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
-      });
-      contract.sentAt = new Date();
-      await contract.save();
-      property.status = PROPERTY_STATUS.CONTRACT_SENT;
-      await property.save();
-      releasedDirectly = true;
-    } catch (err) {
-      console.warn('[PWA] auto contract release to owner failed:', err.message);
-    }
-  }
-
   emitToProperty(property.id, 'property:status', {
     propertyId: property.id,
     status: property.status,
   });
 
   if (property.auditorId) {
+    if (property.auditor?.email) {
+      try {
+        await send({
+          to: property.auditor.email,
+          subject: `Property approved: ${property.name} (${property.propertyCode || property.id})`,
+          html: `
+            <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+              <h2 style="margin:0 0 12px;color:#0f766e;">Property approved</h2>
+              <p style="color:#374151;line-height:1.55;">
+                The central officer has approved <strong>${property.name}</strong>.
+                You can now upload the contract PDF and send it to the property owner for e-signing.
+              </p>
+              <div style="font-size:18px;font-weight:700;letter-spacing:2px;background:#f0fdfa;padding:14px 18px;text-align:center;border-radius:10px;color:#0f766e;margin:18px 0;">
+                Property ID: ${property.propertyCode || property.id}
+              </div>
+            </div>
+          `,
+          text: `Property approved: ${property.name}. You can now upload the contract PDF and send it to the owner for e-signing.`,
+        });
+      } catch (err) {
+        console.warn('[PWA] auditor approval email failed:', err.message);
+      }
+    }
     notifyUser({
       role: 'auditor',
       userId: property.auditorId,
-      type: 'contract_generated',
-      title: `Contract ready: ${property.propertyCode || property.name}`,
-      body: 'Final approved. Preview the PDF, then send to the owner.',
+      type: 'property_approved',
+      title: `Final approved: ${property.propertyCode || property.name}`,
+      body: 'Property approved. You can now upload the contract PDF and send it to the owner for e-signing.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
@@ -388,25 +357,17 @@ const approveProperty = asyncHandler(async (req, res) => {
     notifyUser({
       role: 'owner',
       userId: property.ownerId,
-      type: releasedDirectly ? 'contract_sent_to_owner' : 'contract_generated',
-      title: releasedDirectly
-        ? `Contract sent: ${property.propertyCode || property.name}`
-        : `Final approved: ${property.propertyCode || property.name}`,
-      body: releasedDirectly
-        ? 'Check your inbox — the contract is attached.'
-        : 'The auditor will share the signed contract with you shortly.',
+      type: 'property_approved',
+      title: `Final approved: ${property.propertyCode || property.name}`,
+      body: 'The central officer will upload the contract for your signature.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
   }
 
-  return ok(
-    res,
-    { property, contract },
-    releasedDirectly
-      ? 'Final approved — contract emailed to the owner'
-      : 'Final approved — contract generated and handed to the auditor for release',
-  );
+  return ok(res, { property }, property.source === 'self'
+    ? 'Final approved. Upload the contract from Contracts.'
+    : 'Final approved. Auditor can now send the contract for e-sign.');
 });
 
 // --- Final reject ------------------------------------------------------
@@ -451,6 +412,291 @@ const rejectProperty = asyncHandler(async (req, res) => {
   return ok(res, { property }, 'Property rejected');
 });
 
+const uploadInitialContract = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
+    include: [
+      { model: Contract, as: 'contract' },
+      { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email'] },
+    ],
+  });
+  if (!property) return fail(res, 'Property not found', 404);
+  if (property.status !== PROPERTY_STATUS.FINAL_APPROVED) {
+    return fail(res, 'Contract can be uploaded only after final approval', 400);
+  }
+  if (property.source !== 'self') {
+    return fail(res, 'Auditor-onboarded contracts are uploaded by the auditor', 400);
+  }
+  if (!req.file) return fail(res, 'Upload a contract PDF', 400);
+
+  const url = getUploadedUrl(req.file);
+  if (!url) return fail(res, 'Could not store contract', 500);
+
+  const contract = await getOrCreateContract(property.id);
+  contract.generatedPdfUrl = url;
+  contract.generatedAt = new Date();
+  contract.sentAt = null;
+  contract.releasedByAuditorId = null;
+  contract.signedPdfUrl = null;
+  contract.signedAt = null;
+  contract.ownerSignedByEmail = null;
+  contract.finalPdfUrl = null;
+  contract.finalSignedAt = null;
+  contract.finalSignedByOfficerId = null;
+  contract.finalSentToAuditorAt = null;
+  await contract.save();
+
+  if (property.source === 'self') {
+    let emailDelivered = false;
+    let emailError = null;
+    try {
+      await sendContract({
+        to: property.ownerEmail,
+        ownerName: property.ownerName,
+        propertyName: property.name,
+        propertyCode: property.propertyCode,
+        pdfBuffer: req.file.emailAttachmentBuffer,
+        pdfUrl: url,
+        pdfFilename: contractFilename(property),
+        subject: `Please e-sign contract for ${property.name} (${property.propertyCode})`,
+        heading: 'Please e-sign your contract',
+        instructions: 'The contract is attached as a PDF. Please digitally sign it, then upload the signed copy in your owner portal.',
+      });
+      emailDelivered = true;
+    } catch (err) {
+      emailError = err.message;
+      console.warn('[PWA] owner contract email failed:', err.message);
+    }
+    contract.sentAt = new Date();
+    await contract.save();
+    property.status = PROPERTY_STATUS.CONTRACT_SENT;
+    await property.save();
+
+    if (property.ownerId) {
+      notifyUser({
+        role: 'owner',
+        userId: property.ownerId,
+        type: 'contract_sent_to_owner',
+        title: `Contract sent: ${property.propertyCode || property.name}`,
+        body: 'Check your email, e-sign the PDF, then upload it in your portal.',
+        propertyId: property.id,
+        data: { propertyCode: property.propertyCode, source: property.source },
+      });
+    }
+    emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+    return ok(
+      res,
+      { property, contract, emailDelivered, emailError },
+      emailDelivered
+        ? 'Contract sent to owner for signature'
+        : 'Contract uploaded to owner portal. Email delivery failed.',
+    );
+  }
+
+  if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'contract_generated',
+      title: `Contract ready for signature: ${property.propertyCode || property.name}`,
+      body: 'Download the contract, sign it, and upload the signed copy back to the officer.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+  return ok(res, { property, contract }, 'Contract uploaded for auditor signature');
+});
+
+const uploadFinalContract = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
+    include: [
+      { model: Contract, as: 'contract' },
+      { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email'] },
+    ],
+  });
+  if (!property) return fail(res, 'Property not found', 404);
+  if (property.source !== 'self') {
+    return fail(res, 'Auditor-onboarded contracts are completed by the auditor', 400);
+  }
+  if (!property.contract?.signedPdfUrl) {
+    return fail(res, 'Signed copy from owner/auditor is required first', 400);
+  }
+  if (!req.file) return fail(res, 'Upload the officer-signed final contract PDF', 400);
+
+  const url = getUploadedUrl(req.file);
+  if (!url) return fail(res, 'Could not store final contract', 500);
+
+  const contract = property.contract;
+  contract.finalPdfUrl = url;
+  contract.finalOriginalName = req.file.originalname || null;
+  contract.finalMimeType = req.file.mimetype || null;
+  contract.finalSignedAt = new Date();
+  contract.finalSignedByOfficerId = req.pwaUser.id;
+
+  if (property.source === 'self') {
+    let emailDelivered = false;
+    let emailError = null;
+    try {
+      await sendContract({
+        to: property.ownerEmail,
+        ownerName: property.ownerName,
+        propertyName: property.name,
+        propertyCode: property.propertyCode,
+        pdfBuffer: req.file.emailAttachmentBuffer,
+        pdfUrl: url,
+        pdfFilename: contractFilename(property, 'final-contract'),
+        subject: `Final signed contract for ${property.name} (${property.propertyCode})`,
+        heading: 'Final signed contract',
+        instructions: 'The fully signed contract is attached for your records. Onboarding is complete.',
+      });
+      emailDelivered = true;
+    } catch (err) {
+      emailError = err.message;
+      return fail(res, `Email send failed - ${err.message}`, 500);
+    }
+    contract.sentAt = contract.sentAt || new Date();
+    await contract.save();
+    property.status = PROPERTY_STATUS.COMPLETED;
+    await property.save();
+    if (property.ownerId) {
+      notifyUser({
+        role: 'owner',
+        userId: property.ownerId,
+        type: 'contract_signed',
+        title: `Final contract ready: ${property.propertyCode || property.name}`,
+        body: 'The officer-signed final contract has been emailed and is available in your portal.',
+        propertyId: property.id,
+        data: { propertyCode: property.propertyCode, source: property.source },
+      });
+    }
+    emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+    return ok(res, { property, contract, emailDelivered, emailError }, 'Final contract sent to owner');
+  }
+
+  let emailDelivered = false;
+  let emailError = null;
+  if (property.auditor?.email) {
+    try {
+      await sendContract({
+        to: property.auditor.email,
+        ownerName: property.auditor.name,
+        propertyName: property.name,
+        propertyCode: property.propertyCode,
+        pdfBuffer: req.file.emailAttachmentBuffer,
+        pdfUrl: url,
+        pdfFilename: contractFilename(property, 'final-contract'),
+        subject: `Final signed contract ready for ${property.name} (${property.propertyCode})`,
+        heading: 'Final signed contract ready',
+        intro: `the officer has uploaded the final signed contract for <strong>${property.name}</strong>.`,
+        instructions: 'The fully signed contract is attached. Please send it to the property owner from your auditor portal.',
+      });
+      emailDelivered = true;
+    } catch (err) {
+      emailError = err.message;
+      if (process.env.NODE_ENV === 'production') {
+        return fail(res, `Email send failed - ${err.message}`, 500);
+      }
+    }
+  }
+  contract.finalSentToAuditorAt = new Date();
+  await contract.save();
+  property.status = PROPERTY_STATUS.CONTRACT_SIGNED;
+  await property.save();
+  if (property.auditorId) {
+    notifyUser({
+      role: 'auditor',
+      userId: property.auditorId,
+      type: 'contract_signed',
+      title: `Final contract ready: ${property.propertyCode || property.name}`,
+      body: 'Send the officer-signed final contract to the owner.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+  return ok(res, { property, contract, emailDelivered, emailError }, 'Final contract sent to auditor');
+});
+
+const completeSelfContract = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
+    include: [
+      { model: Contract, as: 'contract' },
+      { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email'] },
+    ],
+  });
+  if (!property) return fail(res, 'Property not found', 404);
+  if (property.source !== 'self') {
+    return fail(res, 'Auditor-onboarded contracts are completed by the auditor', 400);
+  }
+  if (!property.contract?.signedPdfUrl) {
+    return fail(res, 'Owner signed contract is required first', 400);
+  }
+
+  const contract = property.contract;
+  let emailDelivered = false;
+  let emailError = null;
+  try {
+    await sendContract({
+      to: property.ownerEmail,
+      ownerName: property.ownerName,
+      propertyName: property.name,
+      propertyCode: property.propertyCode,
+      pdfUrl: contract.signedPdfUrl,
+      pdfFilename: contractFilename(property, 'final-contract'),
+      subject: `Final signed contract for ${property.name} (${property.propertyCode})`,
+      heading: 'Final signed contract',
+      instructions: 'The fully signed contract is attached for your records. Onboarding is complete.',
+    });
+    emailDelivered = true;
+  } catch (err) {
+    emailError = err.message;
+    console.warn('[PWA] final self contract email failed:', err.message);
+  }
+
+  contract.finalPdfUrl = contract.signedPdfUrl;
+  contract.finalOriginalName = contract.signedOriginalName;
+  contract.finalMimeType = contract.signedMimeType;
+  contract.finalSignedAt = contract.signedAt || new Date();
+  contract.finalSignedByOfficerId = req.pwaUser.id;
+  await contract.save();
+
+  property.status = PROPERTY_STATUS.COMPLETED;
+  await property.save();
+
+  if (property.ownerId) {
+    notifyUser({
+      role: 'owner',
+      userId: property.ownerId,
+      type: 'contract_signed',
+      title: `Final contract ready: ${property.propertyCode || property.name}`,
+      body: 'Your property onboarding is complete. The final contract is available in your portal.',
+      propertyId: property.id,
+      data: { propertyCode: property.propertyCode, source: property.source },
+    });
+  }
+  notifyUser({
+    role: 'officer',
+    userId: req.pwaUser.id,
+    type: 'contract_signed',
+    title: `Onboarding completed: ${property.propertyCode || property.name}`,
+    body: 'Self-onboarded property is now final with contract.',
+    propertyId: property.id,
+    data: { propertyCode: property.propertyCode, source: property.source },
+  });
+  emitToProperty(property.id, 'property:status', { propertyId: property.id, status: property.status });
+
+  return ok(
+    res,
+    { property, contract, emailDelivered, emailError },
+    emailDelivered
+      ? 'Onboarding completed and final contract emailed'
+      : 'Onboarding completed. Email delivery failed.',
+  );
+});
+
 // --- Contracts dashboard (officer side) --------------------------------
 //
 // Reads every contract this officer has touched, split into three buckets:
@@ -473,7 +719,7 @@ const listContracts = asyncHandler(async (req, res) => {
       ],
     },
     include: [
-      { model: Contract, as: 'contract', required: true },
+      { model: Contract, as: 'contract', required: false },
       { model: Auditor, as: 'auditor', attributes: ['id', 'name', 'email'] },
     ],
     attributes: [
@@ -481,14 +727,18 @@ const listContracts = asyncHandler(async (req, res) => {
       'ownerName', 'ownerEmail', 'ownerPhone', 'approvedAt', 'finalApprovedAt',
     ],
     order: [
+      ['finalApprovedAt', 'DESC'],
       [{ model: Contract, as: 'contract' }, 'generatedAt', 'DESC'],
     ],
   });
-  const buckets = { sent: [], received: [], listed: [] };
+  const buckets = { upload: [], sent: [], received: [], final: [], listed: [] };
   for (const p of items) {
     if (p.status === PROPERTY_STATUS.COMPLETED) buckets.listed.push(p);
-    else if (p.contract?.signedPdfUrl) buckets.received.push(p);
-    else buckets.sent.push(p);
+    else if (p.source !== 'self') continue;
+    else if (p.contract?.signedPdfUrl && !p.contract?.finalPdfUrl) buckets.received.push(p);
+    else if (p.contract?.finalPdfUrl) buckets.final.push(p);
+    else if (p.contract?.generatedPdfUrl) buckets.sent.push(p);
+    else buckets.upload.push(p);
   }
   return ok(res, { ...buckets, total: items.length });
 });
@@ -542,6 +792,9 @@ module.exports = {
   followUpProperty,
   approveProperty,
   rejectProperty,
+  uploadInitialContract,
+  uploadFinalContract,
+  completeSelfContract,
   listContracts,
   downloadContractPdf,
 };

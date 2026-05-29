@@ -1,17 +1,15 @@
 const asyncHandler = require('express-async-handler');
 const { Op } = require('sequelize');
-const { Property, PropertyPhase4Data, Officer, Auditor } = require('../models');
+const { Property, PropertyPhase4Data, Auditor } = require('../models');
 const { ok, fail } = require('../../utils/response');
 const { emitToProperty } = require('../services/socket');
 const { notifyUser } = require('../services/notifications');
-const { sendContract } = require('../services/mailer');
+const { send } = require('../services/mailer');
 const {
   SECTION_KEYS, SECTION_KEY_SET,
   PHASE4_SCHEMA, PHASE4_FIELD_KEYS,
   PROPERTY_STATUS,
 } = require('../constants');
-const { uploadContractPdf } = require('../services/contractStorage');
-const { generateContractPdf } = require('../services/contractPdf');
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -316,7 +314,6 @@ const sendBackForRevision = asyncHandler(async (req, res) => {
 //   FINAL_APPROVED and triggers contract PDF generation — from there the
 //   Task 3 flow takes over (auditor releases to owner).
 const finalApprove = asyncHandler(async (req, res) => {
-  const { Contract } = require('../models');
   const property = await Property.findOne({
     where: { id: req.params.id, ...officerVisibility(req.pwaUser.id) },
     include: [
@@ -347,105 +344,59 @@ const finalApprove = asyncHandler(async (req, res) => {
   property.assignedOfficerId = property.assignedOfficerId || req.pwaUser.id;
   await property.save();
 
-  // Now generate the contract PDF and stash on Cloudinary. The auditor
-  // picks it up in their Contracts tab and releases it to the owner.
-  const officer = await Officer.findByPk(property.assignedOfficerId);
-  let pdfBuffer = null;
-  try {
-    pdfBuffer = await generateContractPdf({
-      property,
-      auditor: property.auditor,
-      officerName: officer?.name,
-    });
-  } catch (err) {
-    console.error('[PWA] PDF generation failed:', err);
-  }
-
-  let contract = await Contract.findOne({ where: { propertyId: property.id } });
-  if (!contract) contract = await Contract.create({ propertyId: property.id });
-
-  if (pdfBuffer) {
-    try {
-      const url = await uploadContractPdf({
-        buffer: pdfBuffer,
-        filename: `contract-${property.propertyCode || property.id}.pdf`,
-      });
-      if (url) contract.generatedPdfUrl = url;
-    } catch (err) {
-      console.warn('[PWA] uploadContractPdf failed:', err.message);
-    }
-  }
-  contract.generatedAt = new Date();
-  contract.sentAt = null;
-  contract.releasedByAuditorId = null;
-  await contract.save();
-
-  // For self-onboarded properties the auditor doesn't exist in the loop —
-  // the officer's final approval also releases the contract straight to the
-  // owner, so they don't need a separate "send to owner" step.
-  let releasedDirectly = false;
-  if (property.source === 'self' && pdfBuffer) {
-    try {
-      await sendContract({
-        to: property.ownerEmail,
-        ownerName: property.ownerName,
-        propertyName: property.name,
-        propertyCode: property.propertyCode,
-        pdfBuffer,
-        pdfFilename: `contract-${property.propertyCode || property.id}.pdf`,
-      });
-      contract.sentAt = new Date();
-      contract.releasedByAuditorId = null;
-      await contract.save();
-      property.status = PROPERTY_STATUS.CONTRACT_SENT;
-      await property.save();
-      releasedDirectly = true;
-    } catch (err) {
-      console.warn('[PWA] auto contract release to owner failed:', err.message);
-    }
-  }
-
   emitToProperty(property.id, 'property:status', {
     propertyId: property.id,
     status: property.status,
   });
 
   if (property.auditorId) {
+    if (property.auditor?.email) {
+      try {
+        await send({
+          to: property.auditor.email,
+          subject: `Property approved: ${property.name} (${property.propertyCode || property.id})`,
+          html: `
+            <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+              <h2 style="margin:0 0 12px;color:#0f766e;">Property approved</h2>
+              <p style="color:#374151;line-height:1.55;">
+                The central officer has approved <strong>${property.name}</strong>.
+                You can now upload the contract PDF and send it to the property owner for e-signing.
+              </p>
+              <div style="font-size:18px;font-weight:700;letter-spacing:2px;background:#f0fdfa;padding:14px 18px;text-align:center;border-radius:10px;color:#0f766e;margin:18px 0;">
+                Property ID: ${property.propertyCode || property.id}
+              </div>
+            </div>
+          `,
+          text: `Property approved: ${property.name}. You can now upload the contract PDF and send it to the owner for e-signing.`,
+        });
+      } catch (err) {
+        console.warn('[PWA] auditor approval email failed:', err.message);
+      }
+    }
     notifyUser({
       role: 'auditor',
       userId: property.auditorId,
-      type: 'contract_generated',
-      title: `Contract ready: ${property.propertyCode || property.name}`,
-      body: 'Final approved. Preview the PDF, then send to the owner.',
+      type: 'property_approved',
+      title: `Final approved: ${property.propertyCode || property.name}`,
+      body: 'Property approved. You can now upload the contract PDF and send it to the owner for e-signing.',
       propertyId: property.id,
     });
   }
-  // Always notify the owner — for auditor-onboarded properties this just
-  // tells them "approved, contract on the way"; for self-onboarded ones
-  // (where we just emailed it) it tells them "contract delivered".
   if (property.ownerId) {
     notifyUser({
       role: 'owner',
       userId: property.ownerId,
-      type: releasedDirectly ? 'contract_sent_to_owner' : 'contract_generated',
-      title: releasedDirectly
-        ? `Contract sent: ${property.propertyCode || property.name}`
-        : `Final approved: ${property.propertyCode || property.name}`,
-      body: releasedDirectly
-        ? 'Check your inbox — the contract is attached.'
-        : 'The auditor will share the signed contract with you shortly.',
+      type: 'property_approved',
+      title: `Final approved: ${property.propertyCode || property.name}`,
+      body: 'The central officer will upload the contract for your signature.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode },
     });
   }
 
-  return ok(
-    res,
-    { property, contract },
-    releasedDirectly
-      ? 'Final approved — contract emailed to the owner'
-      : 'Final approved — contract generated and handed to the auditor for release',
-  );
+  return ok(res, { property }, property.source === 'self'
+    ? 'Final approved. Upload the contract from Contracts.'
+    : 'Final approved. Auditor can now send the contract for e-sign.');
 });
 
 module.exports = {

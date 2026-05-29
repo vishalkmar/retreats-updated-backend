@@ -8,6 +8,10 @@ const { buildUploader } = require('../../middlewares/upload.middleware');
 
 const upload = buildUploader('pwa-audits');
 const sectionUpload = upload.array('photos', 50);
+const contractUpload = buildUploader('pwa-contracts', {
+  allowed: /pdf|application\/pdf/,
+  message: 'Only PDF files are allowed',
+});
 
 const listingUpload = buildUploader('pwa-listing-images').array('photos', 30);
 
@@ -43,6 +47,8 @@ router.delete('/listing-images/:propertyId/:imageId', listingCtrl.removeImage);
 router.get('/contracts', contractCtrl.listForAuditor);
 router.get('/contracts/:propertyId', contractCtrl.getOne);
 router.get('/contracts/:propertyId/pdf', contractCtrl.downloadPdf);
+router.post('/contracts/:propertyId/upload-contract', contractUpload.single('contract'), contractCtrl.uploadSignedByAuditor);
+router.post('/contracts/:propertyId/upload-signed', contractUpload.single('contract'), contractCtrl.uploadSignedByAuditor);
 router.post('/contracts/:propertyId/send-to-owner', contractCtrl.sendToOwner);
 
 // Phase 4 — CRM-style deep-dive after Phase 3 approval.

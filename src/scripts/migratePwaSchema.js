@@ -96,6 +96,32 @@ const migrate = async () => {
     }
   }
 
+  // 5) Contract handoff columns used by the officer -> auditor/owner final
+  //    signature flow. Production runs without alter sync, so add explicitly.
+  if (await tableExists('pwa_contracts')) {
+    const columns = [
+      ['finalPdfUrl', 'VARCHAR(500) NULL'],
+      ['finalOriginalName', 'VARCHAR(255) NULL'],
+      ['finalMimeType', 'VARCHAR(120) NULL'],
+      ['finalSignedAt', 'DATETIME NULL'],
+      ['finalSignedByOfficerId', 'INT NULL'],
+      ['finalSentToAuditorAt', 'DATETIME NULL'],
+    ];
+    for (const [column, definition] of columns) {
+      const existing = await describeColumn('pwa_contracts', column);
+      if (!existing) {
+        try {
+          await sequelize.query(
+            `ALTER TABLE \`pwa_contracts\` ADD COLUMN \`${column}\` ${definition}`,
+          );
+          summary.changes.push(`pwa_contracts.${column} column added`);
+        } catch (err) {
+          summary.changes.push(`pwa_contracts.${column} add failed: ${err.message}`);
+        }
+      }
+    }
+  }
+
   return summary;
 };
 

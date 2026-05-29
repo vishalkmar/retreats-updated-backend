@@ -3,6 +3,12 @@ const ctrl = require('../controllers/officer.controller');
 const propertyCtrl = require('../controllers/property.controller');
 const phase4Ctrl = require('../controllers/phase4.controller');
 const { authenticatePwa, requireRoles } = require('../middlewares/pwaAuth.middleware');
+const { buildUploader } = require('../../middlewares/upload.middleware');
+
+const contractUpload = buildUploader('pwa-contracts', {
+  allowed: /pdf|application\/pdf/,
+  message: 'Only PDF files are allowed',
+});
 
 router.use(authenticatePwa, requireRoles('officer'));
 
@@ -24,6 +30,9 @@ router.post('/phase4/:id/final-approve', phase4Ctrl.finalApprove);
 // Contracts dashboard (sent / received / listed) and a PDF proxy.
 router.get('/contracts', ctrl.listContracts);
 router.get('/contracts/:id/pdf', ctrl.downloadContractPdf);
+router.post('/contracts/:id/upload-initial', contractUpload.single('contract'), ctrl.uploadInitialContract);
+router.post('/contracts/:id/upload-final', contractUpload.single('contract'), ctrl.uploadFinalContract);
+router.post('/contracts/:id/complete', ctrl.completeSelfContract);
 
 // Messages reuse the shared controller (handler checks officer access).
 router.get('/properties/:id/messages', propertyCtrl.listMessages);

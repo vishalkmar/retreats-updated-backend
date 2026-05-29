@@ -153,7 +153,7 @@ const getOneById = asyncHandler(async (req, res) => {
 // Shared sign-upload core used by both code-keyed (legacy owner-link flow)
 // and id-keyed (owner self-onboarding) routes.
 const persistSignedUpload = async ({ req, property }) => {
-  if (!property.contract?.sentAt) {
+  if (!property.contract?.sentAt && !property.contract?.generatedPdfUrl) {
     return { error: 'Contract has not been sent to you yet', status: 400 };
   }
   if (!req.file) {
@@ -169,9 +169,8 @@ const persistSignedUpload = async ({ req, property }) => {
   contract.ownerSignedByEmail = req.pwaUser.email;
   await contract.save();
 
-  // Signed copy in hand → property goes live as COMPLETED so the listing
-  // can be published. Owner sees "Final preview" chip light up.
-  property.status = PROPERTY_STATUS.COMPLETED;
+  // Signed copy now returns to the officer/auditor for the final signature.
+  property.status = PROPERTY_STATUS.CONTRACT_SIGNED;
   await property.save();
 
   try {
@@ -187,22 +186,6 @@ const persistSignedUpload = async ({ req, property }) => {
     });
   } catch (err) {
     console.warn('[PWA] signed contract notification failed:', err.message);
-  }
-
-  // Final listing confirmation email to the owner so they have a record
-  // outside the app that the property is live.
-  try {
-    const { sendListingConfirmation } = require('../services/mailer');
-    if (typeof sendListingConfirmation === 'function') {
-      await sendListingConfirmation({
-        to: property.ownerEmail,
-        ownerName: property.ownerName,
-        propertyName: property.name,
-        propertyCode: property.propertyCode,
-      });
-    }
-  } catch (err) {
-    console.warn('[PWA] listing confirmation email failed:', err.message);
   }
 
   // Real-time pings — bell + socket. The confirmation lands with whoever
@@ -221,7 +204,7 @@ const persistSignedUpload = async ({ req, property }) => {
       role: 'auditor', userId: property.auditorId,
       type: 'contract_signed',
       title: `Signed contract uploaded: ${property.propertyCode || property.name}`,
-      body: `${property.ownerName || property.ownerEmail} uploaded the signed copy. Property is now listed.`,
+      body: `${property.ownerName || property.ownerEmail} uploaded the e-signed contract. Mark onboarding complete from Contracts.`,
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
@@ -230,7 +213,7 @@ const persistSignedUpload = async ({ req, property }) => {
       role: 'officer', userId: property.assignedOfficerId,
       type: 'contract_signed',
       title: `Signed contract: ${property.propertyCode || property.name}`,
-      body: 'Self-onboarded owner uploaded the signed copy. Property is now listed.',
+      body: 'Self-onboarded owner uploaded the signed copy. Upload the officer-signed final contract.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
@@ -238,9 +221,11 @@ const persistSignedUpload = async ({ req, property }) => {
   if (property.ownerId) {
     notifyUser({
       role: 'owner', userId: property.ownerId,
-      type: 'listing_completed',
-      title: `Listing live: ${property.propertyCode || property.name}`,
-      body: 'Your retreat is now published.',
+      type: 'contract_signed',
+      title: `Signed contract uploaded: ${property.propertyCode || property.name}`,
+      body: isSelf
+        ? 'Your signed copy is with the officer. Final signing is in progress.'
+        : 'Your signed copy is with the auditor. Final completion is in progress.',
       propertyId: property.id,
       data: { propertyCode: property.propertyCode, source: property.source },
     });
@@ -283,11 +268,12 @@ const uploadSignedContractById = asyncHandler(async (req, res) => {
 // generated PDF back through the owner endpoint so the browser can fetch
 // it as a same-origin auth-aware blob.
 const streamContractPdf = async (property, res) => {
-  if (!property?.contract?.generatedPdfUrl) {
+  const pdfUrl = property?.contract?.finalPdfUrl || property?.contract?.generatedPdfUrl;
+  if (!pdfUrl) {
     return fail(res, 'Contract PDF is not ready yet', 404);
   }
   try {
-    const { buffer, contentType } = await fetchRemoteBuffer(property.contract.generatedPdfUrl);
+    const { buffer, contentType } = await fetchRemoteBuffer(pdfUrl);
     res.setHeader('Content-Type', contentType || 'application/pdf');
     res.setHeader(
       'Content-Disposition',
@@ -326,9 +312,8 @@ const downloadContractPdfByCode = asyncHandler(async (req, res) => {
 //
 // Mirror the auditor's Phase 1 → 2 → 3 → 4 → submit lifecycle, but with
 // `source = 'self'` and no auditorId. The officer reviews these properties
-// in the same dashboard; the only behavioural difference is in finalApprove
-// (handled in phase4.controller) where the contract is emailed straight to
-// the owner since there is no auditor to release it.
+// in the same dashboard; after final approval the officer uploads and routes
+// the contract directly with the owner.
 // ─────────────────────────────────────────────────────────────────────────
 
 const createSelfProperty = asyncHandler(async (req, res) => {

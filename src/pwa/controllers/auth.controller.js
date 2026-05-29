@@ -137,7 +137,7 @@ const ownerRequestOtp = asyncHandler(async (req, res) => {
       approved: 'Phase 3 approved — Phase 4 deep-dive still pending.',
       phase4_submitted: 'Phase 4 submitted, awaiting reviewer approval.',
       phase4_in_revision: 'Phase 4 needs revision before contract is generated.',
-      final_approved: 'Contract is generated but the auditor has not released it to you yet.',
+      final_approved: 'Property is final approved. Contract signing is in progress.',
       rejected: 'This property was rejected.',
     }[property.status] || 'Contract has not been sent yet.';
     return fail(res, `Owner access is not enabled yet — ${friendly}`, 403);
