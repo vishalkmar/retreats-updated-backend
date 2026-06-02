@@ -140,6 +140,16 @@ const runBackgroundDbWork = async () => {
   }
 
   try {
+    const { seedIndianStates } = require('./scripts/seedIndianStates');
+    const result = await seedIndianStates();
+    if (result.created || result.reactivated) {
+      console.log(`[DB] Indian states: +${result.created} created, ${result.reactivated} reactivated`);
+    }
+  } catch (err) {
+    console.warn('[DB] Indian states seed failed (non-fatal):', err.message);
+  }
+
+  try {
     const { seed: seedFeaturedTabs } = require('./scripts/seedFeaturedTabs');
     const result = await seedFeaturedTabs();
     if (result.inserted) {

@@ -5,6 +5,8 @@ const {
   AddOnActivity,
   AddOnActivityImage,
   Location,
+  Hotel,
+  Package,
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
@@ -35,8 +37,29 @@ const parseJsonField = (raw, fallback = []) => {
   try { return JSON.parse(raw); } catch { return fallback; }
 };
 
+// Resolve { ownerType, hotelId, packageId } from a body. An activity is
+// 'general' (default), attached to a 'hotel', or to a 'package'.
+const resolveOwner = async (body) => {
+  const ownerType = ['hotel', 'package'].includes(body.ownerType) ? body.ownerType : 'general';
+  if (ownerType === 'hotel') {
+    if (!body.hotelId) return { error: 'hotelId is required for a hotel activity' };
+    const hotel = await Hotel.findByPk(parseInt(body.hotelId, 10));
+    if (!hotel) return { error: 'Hotel not found' };
+    return { ownerType, hotelId: hotel.id, packageId: null };
+  }
+  if (ownerType === 'package') {
+    if (!body.packageId) return { error: 'packageId is required for a package activity' };
+    const pkg = await Package.findByPk(parseInt(body.packageId, 10));
+    if (!pkg) return { error: 'Package not found' };
+    return { ownerType, hotelId: null, packageId: pkg.id };
+  }
+  return { ownerType: 'general', hotelId: null, packageId: null };
+};
+
 const baseInclude = () => [
   { model: Location, as: 'location' },
+  { model: Hotel, as: 'hotel', attributes: ['id', 'name', 'slug'] },
+  { model: Package, as: 'package', attributes: ['id', 'name', 'slug'] },
   { model: AddOnActivityImage, as: 'gallery' },
 ];
 
@@ -47,12 +70,33 @@ const listInclude = () => [
 ];
 
 // GET /api/add-ons  (public — listing with optional location filter)
+//
+// Owner scoping:
+//   ?hotelId=X      → activities for that hotel PLUS general ones
+//   ?packageId=X    → activities for that package PLUS general ones
+//   ?scope=general  → only general activities
+// Add &exclusive=true to drop the general fallback and return only the
+// owner's own activities.
 const listPublic = asyncHandler(async (req, res) => {
-  const { location, locationId, featured, limit = 12, page = 1 } = req.query;
+  const { location, locationId, featured, hotelId, packageId, scope, exclusive, limit = 12, page = 1 } = req.query;
 
   const where = { isActive: true };
   if (locationId) where.locationId = parseInt(locationId, 10);
   if (featured === 'true') where.isFeatured = true;
+
+  if (hotelId) {
+    const hid = parseInt(hotelId, 10);
+    where[Op.or] = exclusive === 'true'
+      ? [{ ownerType: 'hotel', hotelId: hid }]
+      : [{ ownerType: 'hotel', hotelId: hid }, { ownerType: 'general' }];
+  } else if (packageId) {
+    const pid = parseInt(packageId, 10);
+    where[Op.or] = exclusive === 'true'
+      ? [{ ownerType: 'package', packageId: pid }]
+      : [{ ownerType: 'package', packageId: pid }, { ownerType: 'general' }];
+  } else if (scope === 'general') {
+    where.ownerType = 'general';
+  }
 
   const include = listInclude();
   if (location) {
@@ -90,9 +134,15 @@ const getBySlug = asyncHandler(async (req, res) => {
   return ok(res, { activity: item });
 });
 
-// GET /api/add-ons/admin/all
+// GET /api/add-ons/admin/all?ownerType=&hotelId=&packageId=
 const listAdmin = asyncHandler(async (req, res) => {
+  const where = {};
+  if (['general', 'hotel', 'package'].includes(req.query.ownerType)) where.ownerType = req.query.ownerType;
+  if (req.query.hotelId) where.hotelId = parseInt(req.query.hotelId, 10);
+  if (req.query.packageId) where.packageId = parseInt(req.query.packageId, 10);
+
   const items = await AddOnActivity.findAll({
+    where,
     include: baseInclude(),
     order: [['sortOrder', 'ASC'], ['id', 'DESC']],
   });
@@ -116,6 +166,12 @@ const createActivity = asyncHandler(async (req, res) => {
       return fail(res, 'name is required', 400);
     }
 
+    const owner = await resolveOwner(body);
+    if (owner.error) {
+      await t.rollback();
+      return fail(res, owner.error, 400);
+    }
+
     const slug = await ensureUniqueSlug(body.slug || body.name);
     const mainImageFile = req.files?.mainImage?.[0];
     const galleryFiles = req.files?.gallery || [];
@@ -124,6 +180,9 @@ const createActivity = asyncHandler(async (req, res) => {
       {
         name: body.name,
         slug,
+        ownerType: owner.ownerType,
+        hotelId: owner.hotelId,
+        packageId: owner.packageId,
         locationId: body.locationId ? parseInt(body.locationId, 10) : null,
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
@@ -177,6 +236,19 @@ const updateActivity = asyncHandler(async (req, res) => {
   if (body.name !== undefined) item.name = body.name;
   if (body.slug !== undefined && body.slug !== item.slug) {
     item.slug = await ensureUniqueSlug(body.slug, item.id);
+  }
+
+  // Re-parent (general / hotel / package) when ownership fields are sent.
+  if (body.ownerType !== undefined || body.hotelId !== undefined || body.packageId !== undefined) {
+    const owner = await resolveOwner({
+      ownerType: body.ownerType !== undefined ? body.ownerType : item.ownerType,
+      hotelId: body.hotelId !== undefined ? body.hotelId : item.hotelId,
+      packageId: body.packageId !== undefined ? body.packageId : item.packageId,
+    });
+    if (owner.error) return fail(res, owner.error, 400);
+    item.ownerType = owner.ownerType;
+    item.hotelId = owner.hotelId;
+    item.packageId = owner.packageId;
   }
 
   ['currency', 'descriptionRich', 'highlightsRich'].forEach((f) => {
@@ -236,7 +308,7 @@ const duplicateActivity = asyncHandler(async (req, res) => {
   try {
     const data = original.toJSON();
     const slug = await ensureUniqueSlug(`${data.slug}-copy`);
-    ['id', 'slug', 'createdAt', 'updatedAt', 'location', 'gallery'].forEach((k) => delete data[k]);
+    ['id', 'slug', 'createdAt', 'updatedAt', 'location', 'hotel', 'package', 'gallery'].forEach((k) => delete data[k]);
 
     const copy = await AddOnActivity.create(
       {

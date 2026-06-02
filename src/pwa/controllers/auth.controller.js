@@ -15,6 +15,34 @@ const PASSWORD_LOGIN_ROLES = ['auditor', 'officer'];
 const issuePwaToken = (role, id) =>
   signToken({ pwa: true, role, id });
 
+// -- Identify login method from a single email --------------------------
+//
+// The PWA shows one unified login screen (just an email box). This endpoint
+// tells the UI how to continue: auditors/officers authenticate with a
+// password, everyone else (owners — including first-time self-onboarders)
+// authenticates with an email OTP. Email is the unique key across all three
+// roles. We never reveal whether an account exists for OTP emails (owners
+// can self-onboard), so the response is intentionally non-sensitive.
+
+const identify = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) return fail(res, 'Email is required', 400);
+  const normalized = email.toLowerCase().trim();
+
+  const auditor = await Auditor.findOne({ where: { email: normalized } });
+  if (auditor && auditor.isActive) {
+    return ok(res, { email: normalized, method: 'password', role: 'auditor' });
+  }
+
+  const officer = await Officer.findOne({ where: { email: normalized } });
+  if (officer && officer.isActive) {
+    return ok(res, { email: normalized, method: 'password', role: 'officer' });
+  }
+
+  // Default: treat as a property owner — OTP flow, self-onboarding allowed.
+  return ok(res, { email: normalized, method: 'otp', role: 'owner' });
+});
+
 // -- Auditor / Officer login --------------------------------------------
 
 const login = asyncHandler(async (req, res) => {
@@ -303,6 +331,7 @@ const ownerEmailVerifyOtp = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  identify,
   login,
   verifyLoginOtp,
   resendOtp,

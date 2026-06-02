@@ -10,6 +10,17 @@ const AddOnActivity = sequelize.define(
     name: { type: DataTypes.STRING(220), allowNull: false },
     slug: { type: DataTypes.STRING(240), allowNull: false },
 
+    // An activity is attached to a hotel, a package, or is general (shown
+    // everywhere as a suggestion). `ownerType` records which; the matching
+    // FK is set and the other stays null.
+    ownerType: {
+      type: DataTypes.ENUM('general', 'hotel', 'package'),
+      allowNull: false,
+      defaultValue: 'general',
+    },
+    hotelId: { type: DataTypes.INTEGER, allowNull: true },
+    packageId: { type: DataTypes.INTEGER, allowNull: true },
+
     // Location (FK to Location taxonomy)
     locationId: { type: DataTypes.INTEGER, allowNull: true },
 
@@ -51,6 +62,8 @@ const AddOnActivity = sequelize.define(
     indexes: [
       { name: 'add_on_activities_slug_unique', unique: true, fields: ['slug'] },
       { fields: ['locationId'] },
+      { fields: ['hotelId'] },
+      { fields: ['packageId'] },
       { fields: ['isActive'] },
       { fields: ['isFeatured'] },
     ],

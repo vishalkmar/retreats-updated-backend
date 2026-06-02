@@ -6,7 +6,15 @@ const AvailableRoom = sequelize.define(
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
 
-    hotelId: { type: DataTypes.INTEGER, allowNull: false },
+    // A room is owned by EITHER a hotel OR a package (mutually exclusive).
+    // `ownerType` records which; the other FK stays null.
+    ownerType: {
+      type: DataTypes.ENUM('hotel', 'package'),
+      allowNull: false,
+      defaultValue: 'hotel',
+    },
+    hotelId: { type: DataTypes.INTEGER, allowNull: true },
+    packageId: { type: DataTypes.INTEGER, allowNull: true },
 
     // Identity
     name: { type: DataTypes.STRING(220), allowNull: false },
@@ -28,6 +36,9 @@ const AvailableRoom = sequelize.define(
       comment: 'Display string like "350 sqft" or "32 m²"',
     },
     maxOccupancy: { type: DataTypes.INTEGER, defaultValue: 2 },
+    // Children up to this count stay free (no per-child charge). Used by the
+    // booking widget to decide how many children incur no cost.
+    maxChildrenFree: { type: DataTypes.INTEGER, defaultValue: 0 },
 
     // Media
     mainImage: { type: DataTypes.STRING(500), allowNull: true },
@@ -55,6 +66,7 @@ const AvailableRoom = sequelize.define(
     indexes: [
       { name: 'available_rooms_hotel_slug_unique', unique: true, fields: ['hotelId', 'slug'] },
       { fields: ['hotelId'] },
+      { fields: ['packageId'] },
       { fields: ['isActive'] },
       { fields: ['price'] },
     ],

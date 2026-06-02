@@ -5,6 +5,7 @@ const {
   AvailableRoom,
   AvailableRoomImage,
   Hotel,
+  Package,
   Facility,
   RoomView,
   sequelize,
@@ -15,9 +16,9 @@ const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 const buildUrl = (file) => getUploadedUrl(file);
 const removeFileIfLocal = (url) => removeUploadedFile(url);
 
-// Slug uniqueness is per-hotel — same slug "deluxe-suite" can exist under
-// different hotels.
-const ensureUniqueSlug = async (hotelId, base, ignoreId = null) => {
+// Slug uniqueness is per-owner — same slug "deluxe-suite" can exist under
+// different hotels/packages. `scope` is { hotelId } or { packageId }.
+const ensureUniqueSlug = async (scope, base, ignoreId = null) => {
   let slug = slugify(base, { lower: true, strict: true });
   if (!slug) slug = `room-${Date.now()}`;
   let candidate = slug;
@@ -25,7 +26,7 @@ const ensureUniqueSlug = async (hotelId, base, ignoreId = null) => {
   while (
     await AvailableRoom.findOne({
       where: {
-        hotelId,
+        ...scope,
         slug: candidate,
         ...(ignoreId && { id: { [Op.ne]: ignoreId } }),
       },
@@ -35,6 +36,22 @@ const ensureUniqueSlug = async (hotelId, base, ignoreId = null) => {
     if (i > 50) break;
   }
   return candidate;
+};
+
+// Resolve { ownerType, hotelId, packageId } from a request body, validating
+// the referenced hotel/package exists. Returns { error } on failure.
+const resolveOwner = async (body) => {
+  const ownerType = body.ownerType === 'package' ? 'package' : 'hotel';
+  if (ownerType === 'package') {
+    if (!body.packageId) return { error: 'packageId is required' };
+    const pkg = await Package.findByPk(parseInt(body.packageId, 10));
+    if (!pkg) return { error: 'Package not found' };
+    return { ownerType, hotelId: null, packageId: pkg.id, scope: { packageId: pkg.id } };
+  }
+  if (!body.hotelId) return { error: 'hotelId is required' };
+  const hotel = await Hotel.findByPk(parseInt(body.hotelId, 10));
+  if (!hotel) return { error: 'Hotel not found' };
+  return { ownerType, hotelId: hotel.id, packageId: null, scope: { hotelId: hotel.id } };
 };
 
 const parseJsonField = (raw, fallback = []) => {
@@ -50,6 +67,7 @@ const parseIntArray = (raw) => {
 
 const baseInclude = () => [
   { model: Hotel, as: 'hotel', attributes: ['id', 'name', 'slug', 'primaryImage'] },
+  { model: Package, as: 'package', attributes: ['id', 'name', 'slug'] },
   { model: Facility, as: 'facilities', through: { attributes: [] } },
   { model: RoomView, as: 'views', through: { attributes: [] } },
   { model: AvailableRoomImage, as: 'gallery' },
@@ -78,6 +96,28 @@ const listPublicByHotel = asyncHandler(async (req, res) => {
   return ok(res, { items: rooms, hotel: { id: hotel.id, slug: hotel.slug, name: hotel.name } });
 });
 
+// GET /api/rooms/by-package?packageSlug=... or ?packageId=...  (public —
+// list rooms attached to a package)
+const listPublicByPackage = asyncHandler(async (req, res) => {
+  const { packageSlug, packageId } = req.query;
+  if (!packageSlug && !packageId) {
+    return fail(res, 'packageSlug or packageId is required', 400);
+  }
+
+  const pkg = packageId
+    ? await Package.findByPk(packageId)
+    : await Package.findOne({ where: { slug: packageSlug } });
+  if (!pkg) return fail(res, 'Package not found', 404);
+
+  const rooms = await AvailableRoom.findAll({
+    where: { packageId: pkg.id, isActive: true },
+    include: baseInclude(),
+    order: [['sortOrder', 'ASC'], ['price', 'ASC']],
+  });
+
+  return ok(res, { items: rooms, package: { id: pkg.id, slug: pkg.slug, name: pkg.name } });
+});
+
 // GET /api/rooms/by-slug?hotelSlug=...&roomSlug=...   (public — detail)
 const getBySlug = asyncHandler(async (req, res) => {
   const { hotelSlug, roomSlug } = req.query;
@@ -97,15 +137,19 @@ const getBySlug = asyncHandler(async (req, res) => {
 
 // ─── Admin ────────────────────────────────────────────────────────────────
 
-// GET /api/rooms/admin/all?hotelId=...   (admin — list, optional hotel filter)
+// GET /api/rooms/admin/all?hotelId=...&packageId=...   (admin — list,
+// optionally filtered by owning hotel or package)
 const listAdmin = asyncHandler(async (req, res) => {
   const where = {};
   if (req.query.hotelId) where.hotelId = parseInt(req.query.hotelId, 10);
+  if (req.query.packageId) where.packageId = parseInt(req.query.packageId, 10);
+  if (req.query.ownerType === 'hotel') where.ownerType = 'hotel';
+  if (req.query.ownerType === 'package') where.ownerType = 'package';
 
   const items = await AvailableRoom.findAll({
     where,
     include: baseInclude(),
-    order: [['hotelId', 'ASC'], ['sortOrder', 'ASC'], ['id', 'DESC']],
+    order: [['ownerType', 'ASC'], ['hotelId', 'ASC'], ['packageId', 'ASC'], ['sortOrder', 'ASC'], ['id', 'DESC']],
   });
   return ok(res, { items });
 });
@@ -126,26 +170,23 @@ const createRoom = asyncHandler(async (req, res) => {
       await t.rollback();
       return fail(res, 'name is required', 400);
     }
-    if (!body.hotelId) {
+
+    const owner = await resolveOwner(body);
+    if (owner.error) {
       await t.rollback();
-      return fail(res, 'hotelId is required', 400);
+      return fail(res, owner.error, 400);
     }
 
-    const hotelId = parseInt(body.hotelId, 10);
-    const hotel = await Hotel.findByPk(hotelId);
-    if (!hotel) {
-      await t.rollback();
-      return fail(res, 'Hotel not found', 404);
-    }
-
-    const slug = await ensureUniqueSlug(hotelId, body.slug || body.name);
+    const slug = await ensureUniqueSlug(owner.scope, body.slug || body.name);
 
     const mainImageFile = req.files?.mainImage?.[0];
     const galleryFiles = req.files?.gallery || [];
 
     const room = await AvailableRoom.create(
       {
-        hotelId,
+        ownerType: owner.ownerType,
+        hotelId: owner.hotelId,
+        packageId: owner.packageId,
         name: body.name,
         slug,
         price: body.price ? parseFloat(body.price) : 0,
@@ -153,6 +194,7 @@ const createRoom = asyncHandler(async (req, res) => {
         currency: body.currency || 'INR',
         roomSize: body.roomSize || null,
         maxOccupancy: body.maxOccupancy ? parseInt(body.maxOccupancy, 10) : 2,
+        maxChildrenFree: body.maxChildrenFree ? parseInt(body.maxChildrenFree, 10) : 0,
         mainImage: mainImageFile ? buildUrl(mainImageFile) : null,
         highlightsRich: body.highlightsRich || null,
         descriptionRich: body.descriptionRich || null,
@@ -201,19 +243,24 @@ const updateRoom = asyncHandler(async (req, res) => {
   const mainImageFile = req.files?.mainImage?.[0];
   const galleryFiles = req.files?.gallery || [];
 
-  // Allow re-parenting to a different hotel
-  if (body.hotelId !== undefined && body.hotelId !== '') {
-    const newHotelId = parseInt(body.hotelId, 10);
-    if (newHotelId !== room.hotelId) {
-      const hotel = await Hotel.findByPk(newHotelId);
-      if (!hotel) return fail(res, 'Target hotel not found', 404);
-      room.hotelId = newHotelId;
-    }
+  // Allow re-parenting to a different hotel or package. Only re-resolve when
+  // the client actually sends ownership fields.
+  if (body.ownerType !== undefined || body.hotelId !== undefined || body.packageId !== undefined) {
+    const owner = await resolveOwner({
+      ownerType: body.ownerType || room.ownerType,
+      hotelId: body.hotelId !== undefined ? body.hotelId : room.hotelId,
+      packageId: body.packageId !== undefined ? body.packageId : room.packageId,
+    });
+    if (owner.error) return fail(res, owner.error, 400);
+    room.ownerType = owner.ownerType;
+    room.hotelId = owner.hotelId;
+    room.packageId = owner.packageId;
   }
 
   if (body.name !== undefined) room.name = body.name;
   if (body.slug !== undefined && body.slug !== room.slug) {
-    room.slug = await ensureUniqueSlug(room.hotelId, body.slug, room.id);
+    const scope = room.ownerType === 'package' ? { packageId: room.packageId } : { hotelId: room.hotelId };
+    room.slug = await ensureUniqueSlug(scope, body.slug, room.id);
   }
 
   const directFields = ['currency', 'roomSize', 'highlightsRich', 'descriptionRich'];
@@ -226,6 +273,8 @@ const updateRoom = asyncHandler(async (req, res) => {
     room.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
   if (body.maxOccupancy !== undefined && body.maxOccupancy !== '')
     room.maxOccupancy = parseInt(body.maxOccupancy, 10);
+  if (body.maxChildrenFree !== undefined && body.maxChildrenFree !== '')
+    room.maxChildrenFree = parseInt(body.maxChildrenFree, 10);
   if (body.sortOrder !== undefined && body.sortOrder !== '')
     room.sortOrder = parseInt(body.sortOrder, 10);
 
@@ -271,9 +320,12 @@ const duplicateRoom = asyncHandler(async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const data = original.toJSON();
-    const slug = await ensureUniqueSlug(original.hotelId, `${data.slug}-copy`);
+    const scope = original.ownerType === 'package'
+      ? { packageId: original.packageId }
+      : { hotelId: original.hotelId };
+    const slug = await ensureUniqueSlug(scope, `${data.slug}-copy`);
 
-    ['id', 'slug', 'createdAt', 'updatedAt', 'hotel', 'facilities', 'views', 'gallery']
+    ['id', 'slug', 'createdAt', 'updatedAt', 'hotel', 'package', 'facilities', 'views', 'gallery']
       .forEach((k) => delete data[k]);
 
     const copy = await AvailableRoom.create(
@@ -357,6 +409,7 @@ const removeGalleryImage = asyncHandler(async (req, res) => {
 
 module.exports = {
   listPublicByHotel,
+  listPublicByPackage,
   getBySlug,
   listAdmin,
   getAdminOne,

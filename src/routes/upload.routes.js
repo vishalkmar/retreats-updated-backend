@@ -25,6 +25,41 @@ router.post(
   })
 );
 
+// GET /api/uploads/proxy-image?url=...  (admin) — server-side fetch of a
+// remote image so the admin can "paste a link" in an uploader. Streaming the
+// bytes back from our own origin sidesteps the browser CORS wall, letting the
+// client turn the response into a File and run it through the normal upload
+// pipeline. Guards: http(s) only, image content-type only, 15MB cap.
+router.get(
+  '/proxy-image',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { url } = req.query;
+    if (!url || !/^https?:\/\//i.test(url)) return fail(res, 'A valid http(s) image URL is required', 400);
+    let upstream;
+    try {
+      upstream = await fetch(url, {
+        redirect: 'follow',
+        headers: {
+          // Many hosts (e.g. Wikimedia) reject requests without a real UA.
+          'User-Agent': 'Mozilla/5.0 (compatible; TraveonAdmin/1.0; +https://traveon.com)',
+          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        },
+      });
+    } catch {
+      return fail(res, 'Could not reach that URL', 400);
+    }
+    if (!upstream.ok) return fail(res, `Fetch failed (${upstream.status})`, 400);
+    const ct = upstream.headers.get('content-type') || '';
+    if (!ct.startsWith('image/')) return fail(res, 'That URL is not an image', 400);
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    if (buf.length > 15 * 1024 * 1024) return fail(res, 'Image too large (max 15MB)', 400);
+    res.set('Content-Type', ct);
+    res.set('Cache-Control', 'no-store');
+    return res.send(buf);
+  })
+);
+
 // POST /api/uploads/user-avatar  (signed-in user) — profile photo upload.
 // Returns the public Cloudinary URL the caller can persist on its profile.
 router.post(

@@ -342,6 +342,10 @@ HotelImage.belongsTo(Hotel, { foreignKey: 'hotelId', as: 'hotel' });
 Hotel.hasMany(AvailableRoom, { foreignKey: 'hotelId', as: 'rooms', onDelete: 'CASCADE' });
 AvailableRoom.belongsTo(Hotel, { foreignKey: 'hotelId', as: 'hotel' });
 
+// Package <-> AvailableRoom (FK — a room can instead belong to a package)
+Package.hasMany(AvailableRoom, { foreignKey: 'packageId', as: 'rooms', onDelete: 'CASCADE' });
+AvailableRoom.belongsTo(Package, { foreignKey: 'packageId', as: 'package' });
+
 // AvailableRoom <-> Facility (M2M)
 AvailableRoom.belongsToMany(Facility, {
   through: 'room_facilities',
@@ -382,6 +386,12 @@ AvailableRoomImage.belongsTo(AvailableRoom, { foreignKey: 'roomId', as: 'room' }
 // AddOnActivity <-> Location
 AddOnActivity.belongsTo(Location, { foreignKey: 'locationId', as: 'location' });
 Location.hasMany(AddOnActivity, { foreignKey: 'locationId', as: 'addOnActivities' });
+
+// AddOnActivity <-> Hotel / Package (optional owner — else "general")
+Hotel.hasMany(AddOnActivity, { foreignKey: 'hotelId', as: 'addOnActivities', onDelete: 'SET NULL' });
+AddOnActivity.belongsTo(Hotel, { foreignKey: 'hotelId', as: 'hotel' });
+Package.hasMany(AddOnActivity, { foreignKey: 'packageId', as: 'addOnActivities', onDelete: 'SET NULL' });
+AddOnActivity.belongsTo(Package, { foreignKey: 'packageId', as: 'package' });
 
 // AddOnActivity <-> AddOnActivityImage (gallery)
 AddOnActivity.hasMany(AddOnActivityImage, { foreignKey: 'activityId', as: 'gallery', onDelete: 'CASCADE' });

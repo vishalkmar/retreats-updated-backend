@@ -2,6 +2,9 @@ const router = require('express').Router();
 const ctrl = require('../controllers/auth.controller');
 const { authenticatePwa } = require('../middlewares/pwaAuth.middleware');
 
+// Unified login — identify how an email should authenticate (password vs OTP)
+router.post('/identify', ctrl.identify);
+
 // Auditor / Officer
 router.post('/login', ctrl.login);
 router.post('/verify-otp', ctrl.verifyLoginOtp);
