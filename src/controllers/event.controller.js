@@ -187,6 +187,8 @@ const createEvent = asyncHandler(async (req, res) => {
       slug,
       eventTypeId: body.eventTypeId ? parseInt(body.eventTypeId, 10) : null,
       locationId: body.locationId ? parseInt(body.locationId, 10) : null,
+      cityName: body.cityName ? String(body.cityName).trim() : null,
+      address: body.address ? String(body.address).trim() : null,
       eventDate: body.eventDate || null,
       endDate: body.endDate || null,
       startTime: body.startTime || null,
@@ -241,7 +243,7 @@ const updateEvent = asyncHandler(async (req, res) => {
     event.slug = await ensureUniqueSlug(body.slug, event.id);
   }
 
-  ['startTime', 'endTime', 'currency', 'mapEmbedHtml',
+  ['startTime', 'endTime', 'currency', 'mapEmbedHtml', 'cityName', 'address',
    'aboutRich', 'highlightsRich', 'termsConditions', 'privacyPolicy',
    'eventDate', 'endDate',
   ].forEach((f) => {

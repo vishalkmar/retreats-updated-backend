@@ -22,6 +22,8 @@ const Package = sequelize.define(
 
     // Location
     cityId: { type: DataTypes.INTEGER, allowNull: true },
+    // Free-text city typed manually next to the state. Preferred over cityId.
+    cityName: { type: DataTypes.STRING(160), allowNull: true },
     locationId: {
       type: DataTypes.INTEGER,
       allowNull: true,

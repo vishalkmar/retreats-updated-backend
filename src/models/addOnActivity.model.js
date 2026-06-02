@@ -21,8 +21,11 @@ const AddOnActivity = sequelize.define(
     hotelId: { type: DataTypes.INTEGER, allowNull: true },
     packageId: { type: DataTypes.INTEGER, allowNull: true },
 
-    // Location (FK to Location taxonomy)
+    // Location (FK to Location taxonomy = Indian state) + manual city/address.
+    // city/address power the "outside" suggestion matching on the public site.
     locationId: { type: DataTypes.INTEGER, allowNull: true },
+    cityName: { type: DataTypes.STRING(160), allowNull: true },
+    address: { type: DataTypes.STRING(500), allowNull: true },
 
     // Pricing
     price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },

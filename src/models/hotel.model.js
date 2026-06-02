@@ -25,9 +25,11 @@ const Hotel = sequelize.define(
       comment: 'Provider hint: youtube | vimeo | mp4 | other',
     },
 
-    // Location — Hotel belongs to a Location (new module) and optionally a City
+    // Location — Hotel belongs to a Location (now an Indian state) and a city.
     locationId: { type: DataTypes.INTEGER, allowNull: true },
     cityId: { type: DataTypes.INTEGER, allowNull: true },
+    // Free-text city, typed manually next to the state. Preferred over cityId.
+    cityName: { type: DataTypes.STRING(160), allowNull: true },
     address: {
       type: DataTypes.STRING(500),
       allowNull: true,

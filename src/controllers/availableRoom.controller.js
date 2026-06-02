@@ -65,6 +65,27 @@ const parseIntArray = (raw) => {
   return Array.isArray(arr) ? arr.map((x) => parseInt(x, 10)).filter(Boolean) : [];
 };
 
+// Sanitise extra-person pricing tiers coming from the admin form so booking
+// maths can trust the shape. Drops malformed rows.
+const normalizeTiers = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((t) => {
+      const ageFrom = parseInt(t.ageFrom, 10);
+      const ageTo = parseInt(t.ageTo, 10);
+      if (Number.isNaN(ageFrom) || Number.isNaN(ageTo)) return null;
+      const priceType = t.priceType === 'custom' ? 'custom' : 'free';
+      return {
+        ageFrom: Math.max(0, Math.min(120, ageFrom)),
+        ageTo: Math.max(0, Math.min(120, ageTo)),
+        priceType,
+        price: priceType === 'custom' ? Math.max(0, parseFloat(t.price) || 0) : 0,
+        bed: t.bed === 'with' ? 'with' : 'without',
+      };
+    })
+    .filter(Boolean);
+};
+
 const baseInclude = () => [
   { model: Hotel, as: 'hotel', attributes: ['id', 'name', 'slug', 'primaryImage'] },
   { model: Package, as: 'package', attributes: ['id', 'name', 'slug'] },
@@ -195,6 +216,7 @@ const createRoom = asyncHandler(async (req, res) => {
         roomSize: body.roomSize || null,
         maxOccupancy: body.maxOccupancy ? parseInt(body.maxOccupancy, 10) : 2,
         maxChildrenFree: body.maxChildrenFree ? parseInt(body.maxChildrenFree, 10) : 0,
+        extraPersonTiers: normalizeTiers(parseJsonField(body.extraPersonTiers, [])),
         mainImage: mainImageFile ? buildUrl(mainImageFile) : null,
         highlightsRich: body.highlightsRich || null,
         descriptionRich: body.descriptionRich || null,
@@ -275,6 +297,8 @@ const updateRoom = asyncHandler(async (req, res) => {
     room.maxOccupancy = parseInt(body.maxOccupancy, 10);
   if (body.maxChildrenFree !== undefined && body.maxChildrenFree !== '')
     room.maxChildrenFree = parseInt(body.maxChildrenFree, 10);
+  if (body.extraPersonTiers !== undefined)
+    room.extraPersonTiers = normalizeTiers(parseJsonField(body.extraPersonTiers, []));
   if (body.sortOrder !== undefined && body.sortOrder !== '')
     room.sortOrder = parseInt(body.sortOrder, 10);
 

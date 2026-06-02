@@ -101,6 +101,7 @@ const fetchItem = async (type, id) => {
       meta: {
         roomSize: j.roomSize,
         maxOccupancy: j.maxOccupancy,
+        extraPersonTiers: Array.isArray(j.extraPersonTiers) ? j.extraPersonTiers : [],
       },
     };
   }
@@ -164,6 +165,20 @@ const fetchItem = async (type, id) => {
   return null;
 };
 
+// Per-night charge (in paise) for one extra person, based on the room's tiers.
+// Matches by age band AND bed preference (with/without) — falling back to an
+// age-only match. Free / unmatched persons cost nothing.
+const extraPersonPaise = (tiers, person) => {
+  if (!Array.isArray(tiers)) return 0;
+  const a = Number(person?.age);
+  if (Number.isNaN(a)) return 0;
+  const bed = person?.bed === 'with' ? 'with' : 'without';
+  const inBand = (t) => a >= Number(t.ageFrom) && a <= Number(t.ageTo);
+  const tier = tiers.find((t) => inBand(t) && t.bed === bed) || tiers.find(inBand);
+  if (!tier || tier.priceType !== 'custom') return 0;
+  return toPaise(tier.price);
+};
+
 // Compute the pricing breakdown for a given item + booking inputs. All math
 // is in paise so we never lose a rupee to float rounding.
 const computePricing = ({
@@ -171,25 +186,36 @@ const computePricing = ({
   guestCount = 1,
   units = 1,
   roomCount = 1,
+  extraPersons = [],
   walletPaise = 0,
   couponDiscountPaise = 0,
 }) => {
   const unitPricePaise = toPaise(item.price);
+  const extras = Array.isArray(extraPersons) ? extraPersons : [];
 
   // Logic per type:
-  //   room  → unitPrice × nights × roomCount  (per room, per night — like MMT)
+  //   room  → unitPrice × nights × rooms  (+ per-night extra-person charges)
   //   event → unitPrice × ticket count (guestCount)
   //   package, addon → unitPrice × guests (per person)
   let quantity;
+  let roomsResolved = Math.max(1, Number(roomCount || 1));
+  let extraPersonsPaise = 0;
   if (item.type === 'room') {
     const nights = Math.max(1, Number(units || 1));
-    const rooms = Math.max(1, Number(roomCount || 1));
-    quantity = nights * rooms;
+    const maxOcc = Math.max(1, Number(item.meta?.maxOccupancy || 2));
+    // Auto-grow the room count when the party (adults + extra guests) spills
+    // past one room's occupancy — like MMT splitting into a second room.
+    const totalPeople = Math.max(1, Number(guestCount || 1)) + extras.length;
+    roomsResolved = Math.max(roomsResolved, Math.ceil(totalPeople / maxOcc));
+    quantity = nights * roomsResolved;
+    const tiers = item.meta?.extraPersonTiers || [];
+    const perNightExtra = extras.reduce((sum, p) => sum + extraPersonPaise(tiers, p), 0);
+    extraPersonsPaise = perNightExtra * nights;
   } else {
     quantity = Math.max(1, Number(guestCount || 1));
   }
 
-  const subtotalPaise = unitPricePaise * quantity;
+  const subtotalPaise = unitPricePaise * quantity + extraPersonsPaise;
   const taxPaise = Math.round(subtotalPaise * TAX_RATE);
 
   // Discounts are applied after tax (matches MMT's display). Clamp so we
@@ -202,6 +228,9 @@ const computePricing = ({
 
   return {
     quantity,
+    roomsResolved,
+    extraPersonsCount: extras.length,
+    extraPersonsPaise,
     currency: item.currency || 'INR',
     unitPricePaise,
     subtotalPaise,
@@ -214,6 +243,7 @@ const computePricing = ({
       unitPrice: fromPaise(unitPricePaise),
       subtotal: fromPaise(subtotalPaise),
       tax: fromPaise(taxPaise),
+      extraPersons: fromPaise(extraPersonsPaise),
       walletDiscount: fromPaise(walletDiscountPaise),
       couponDiscount: fromPaise(safeCoupon),
       total: fromPaise(totalPaise),

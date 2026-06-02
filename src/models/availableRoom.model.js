@@ -36,9 +36,15 @@ const AvailableRoom = sequelize.define(
       comment: 'Display string like "350 sqft" or "32 m²"',
     },
     maxOccupancy: { type: DataTypes.INTEGER, defaultValue: 2 },
-    // Children up to this count stay free (no per-child charge). Used by the
-    // booking widget to decide how many children incur no cost.
+    // Children up to this count stay free (legacy; superseded by
+    // extraPersonTiers). Kept for backward compatibility.
     maxChildrenFree: { type: DataTypes.INTEGER, defaultValue: 0 },
+
+    // Extra-person pricing tiers by age band. Each entry:
+    //   { ageFrom, ageTo, priceType: 'free'|'custom', price, bed: 'with'|'without' }
+    // `price` is per person, per night. Drives real-time booking maths and the
+    // "extra guest" filters on the public site.
+    extraPersonTiers: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
 
     // Media
     mainImage: { type: DataTypes.STRING(500), allowNull: true },

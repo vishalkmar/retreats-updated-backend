@@ -13,6 +13,8 @@ const Event = sequelize.define(
     // Type & location (FKs to taxonomies)
     eventTypeId: { type: DataTypes.INTEGER, allowNull: true },
     locationId: { type: DataTypes.INTEGER, allowNull: true },
+    cityName: { type: DataTypes.STRING(160), allowNull: true },
+    address: { type: DataTypes.STRING(500), allowNull: true },
 
     // Schedule
     eventDate: { type: DataTypes.DATEONLY, allowNull: true, comment: 'Specific date if one-off' },

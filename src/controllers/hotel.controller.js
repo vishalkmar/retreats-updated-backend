@@ -293,6 +293,7 @@ const createHotel = asyncHandler(async (req, res) => {
         videoType: body.videoType || null,
         locationId: body.locationId ? parseInt(body.locationId, 10) : null,
         cityId: body.cityId ? parseInt(body.cityId, 10) : null,
+        cityName: body.cityName ? String(body.cityName).trim() : null,
         address: body.address || null,
         mapEmbedHtml: body.mapEmbedHtml || null,
         rating: body.rating ? parseFloat(body.rating) : 0,
@@ -361,7 +362,7 @@ const updateHotel = asyncHandler(async (req, res) => {
 
   const directFields = [
     'shortDescription', 'description', 'videoUrl', 'videoType',
-    'address', 'mapEmbedHtml', 'currency',
+    'address', 'mapEmbedHtml', 'currency', 'cityName',
     'highlightsRich', 'inclusionsRich', 'exclusionsRich',
     'termsConditions', 'privacyPolicy',
     'metaTitle', 'metaDescription',

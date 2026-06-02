@@ -78,11 +78,14 @@ const listInclude = () => [
 // Add &exclusive=true to drop the general fallback and return only the
 // owner's own activities.
 const listPublic = asyncHandler(async (req, res) => {
-  const { location, locationId, featured, hotelId, packageId, scope, exclusive, limit = 12, page = 1 } = req.query;
+  const { location, locationId, featured, hotelId, packageId, scope, exclusive, city, limit = 12, page = 1 } = req.query;
 
   const where = { isActive: true };
   if (locationId) where.locationId = parseInt(locationId, 10);
   if (featured === 'true') where.isFeatured = true;
+  // Match activities that physically sit in a given city — drives the
+  // "outside / nearby" suggestions on a hotel/package page (case-insensitive).
+  if (city) where.cityName = { [Op.like]: String(city).trim() };
 
   if (hotelId) {
     const hid = parseInt(hotelId, 10);
@@ -184,6 +187,8 @@ const createActivity = asyncHandler(async (req, res) => {
         hotelId: owner.hotelId,
         packageId: owner.packageId,
         locationId: body.locationId ? parseInt(body.locationId, 10) : null,
+        cityName: body.cityName ? String(body.cityName).trim() : null,
+        address: body.address ? String(body.address).trim() : null,
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
         currency: body.currency || 'INR',
@@ -251,7 +256,7 @@ const updateActivity = asyncHandler(async (req, res) => {
     item.packageId = owner.packageId;
   }
 
-  ['currency', 'descriptionRich', 'highlightsRich'].forEach((f) => {
+  ['currency', 'descriptionRich', 'highlightsRich', 'cityName', 'address'].forEach((f) => {
     if (body[f] !== undefined) item[f] = body[f] === '' ? null : body[f];
   });
 

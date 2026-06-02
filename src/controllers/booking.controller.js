@@ -22,6 +22,20 @@ const {
 
 const normalizeType = (t) => String(t || '').toLowerCase().trim();
 
+// Parse the optional extra-guest list from a request. Accepts an array (or
+// JSON string) of { age }. Caps at 20 to keep maths sane.
+const parseExtraPersons = (raw) => {
+  let arr = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((p) => ({ age: parseInt(p?.age, 10), bed: p?.bed === 'with' ? 'with' : 'without' }))
+    .filter((p) => Number.isInteger(p.age) && p.age >= 0 && p.age <= 120)
+    .slice(0, 20);
+};
+
 const publicBooking = (booking) => {
   if (!booking) return null;
   const j = booking.toJSON ? booking.toJSON() : booking;
@@ -92,10 +106,11 @@ const preview = asyncHandler(async (req, res) => {
 
   const guestCount = Math.max(1, parseInt(req.body.guestCount, 10) || 1);
   const roomCount = Math.max(1, parseInt(req.body.roomCount, 10) || 1);
+  const extraPersons = parseExtraPersons(req.body.extraPersons);
 
   // First quote — no discounts — so we know the gross (subtotal + tax) and
   // can validate coupon min-order rules against it.
-  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, walletPaise: 0, couponDiscountPaise: 0 });
+  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, extraPersons, walletPaise: 0, couponDiscountPaise: 0 });
 
   // Coupon
   let couponResult = null;
@@ -145,6 +160,7 @@ const preview = asyncHandler(async (req, res) => {
     guestCount,
     units: schedule.units,
     roomCount,
+    extraPersons,
     walletPaise,
     couponDiscountPaise,
   });
@@ -153,7 +169,8 @@ const preview = asyncHandler(async (req, res) => {
     item: buildItemSnapshot(item),
     schedule,
     guestCount,
-    roomCount,
+    roomCount: pricing.roomsResolved,
+    extraPersons,
     pricing,
     guest: {
       name: req.user.name || '',
@@ -207,15 +224,15 @@ const create = asyncHandler(async (req, res) => {
 
   const guestCount = Math.max(1, parseInt(req.body.guestCount, 10) || 1);
   const roomCount = Math.max(1, parseInt(req.body.roomCount, 10) || 1);
-  // Rooms × max-occupancy is the real cap when N rooms are booked together.
-  if (item.meta?.maxOccupancy && itemType === 'room') {
-    const cap = item.meta.maxOccupancy * roomCount;
-    if (guestCount > cap) {
-      return fail(
-        res,
-        `${roomCount} room${roomCount > 1 ? 's' : ''} of this type sleep a maximum of ${cap} guests`,
-        400,
-      );
+  const extraPersons = parseExtraPersons(req.body.extraPersons);
+  // Rooms auto-grow to fit the party (adults + extra guests) in computePricing,
+  // so instead of rejecting an over-capacity request we just guard a sane upper
+  // bound to avoid absurd room counts.
+  if (itemType === 'room') {
+    const maxOcc = Math.max(1, Number(item.meta?.maxOccupancy || 2));
+    const needed = Math.ceil((guestCount + extraPersons.length) / maxOcc);
+    if (needed > 20) {
+      return fail(res, 'That party size needs too many rooms — please split the booking', 400);
     }
   }
 
@@ -228,7 +245,7 @@ const create = asyncHandler(async (req, res) => {
   if (!guestPhone) return fail(res, 'Guest phone is required', 400);
 
   // ── Resolve coupon (if any) ────────────────────────────────────────────
-  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, walletPaise: 0, couponDiscountPaise: 0 });
+  const base = computePricing({ item, guestCount, units: schedule.units, roomCount, extraPersons, walletPaise: 0, couponDiscountPaise: 0 });
 
   let couponObj = null;
   let couponDiscountPaise = 0;
@@ -270,6 +287,7 @@ const create = asyncHandler(async (req, res) => {
     guestCount,
     units: schedule.units,
     roomCount,
+    extraPersons,
     walletPaise,
     couponDiscountPaise,
   });
@@ -281,7 +299,7 @@ const create = asyncHandler(async (req, res) => {
     userId: req.user.id,
     itemType,
     itemId,
-    itemSnapshot: buildItemSnapshot(item),
+    itemSnapshot: { ...buildItemSnapshot(item), extraPersons },
     scheduledFor: schedule.scheduledFor,
     scheduledEndAt: schedule.scheduledEndAt,
     units: schedule.units,
@@ -289,7 +307,7 @@ const create = asyncHandler(async (req, res) => {
     guestEmail,
     guestPhone,
     guestCount,
-    roomCount: itemType === 'room' ? roomCount : 1,
+    roomCount: itemType === 'room' ? pricing.roomsResolved : 1,
     specialRequests,
     currency: pricing.currency,
     unitPricePaise: pricing.unitPricePaise,

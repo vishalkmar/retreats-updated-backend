@@ -332,6 +332,7 @@ const createPackage = asyncHandler(async (req, res) => {
         primaryImage: primaryImageFile ? buildUrl(primaryImageFile) : null,
         videoUrl: body.videoUrl || null,
         cityId: body.cityId ? parseInt(body.cityId, 10) : null,
+        cityName: body.cityName ? String(body.cityName).trim() : null,
         locationId: body.locationId ? parseInt(body.locationId, 10) : null,
         locationDetail: body.locationDetail || null,
         durationDays: body.durationDays ? parseInt(body.durationDays, 10) : 1,
@@ -443,7 +444,7 @@ const updatePackage = asyncHandler(async (req, res) => {
     pkg.slug = await ensureUniqueSlug(body.slug, pkg.id);
   }
   const directFields = [
-    'shortDescription', 'description', 'videoUrl', 'locationDetail', 'timing',
+    'shortDescription', 'description', 'videoUrl', 'locationDetail', 'timing', 'cityName',
     'startDate', 'endDate', 'currency', 'hostName', 'hostBio',
     'metaTitle', 'metaDescription',
     'richContent', 'highlightsRich', 'inclusionsRich', 'exclusionsRich',
