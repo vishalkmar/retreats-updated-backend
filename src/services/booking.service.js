@@ -6,13 +6,14 @@ const {
   Event,
   EventType,
   AddOnActivity,
+  EventActivity,
   Location,
   City,
   Booking,
 } = require('../models');
 
 const TAX_RATE = Number(process.env.BOOKING_TAX_RATE || 0.18); // 18% GST default
-const ALLOWED_TYPES = ['package', 'room', 'event', 'addon'];
+const ALLOWED_TYPES = ['package', 'room', 'event', 'addon', 'event_activity'];
 
 const toPaise = (rupees) => Math.round(Number(rupees || 0) * 100);
 const fromPaise = (paise) => Number(paise || 0) / 100;
@@ -159,6 +160,28 @@ const fetchItem = async (type, id) => {
         minAge: j.minAge,
         maxAge: j.maxAge,
       },
+    };
+  }
+
+  if (type === 'event_activity') {
+    const ea = await EventActivity.findByPk(numId);
+    if (!ea || ea.isActive === false) return null;
+    const j = ea.toJSON();
+    // Price = cheapest ticket, else adult price.
+    const ticketPrices = (Array.isArray(j.tickets) ? j.tickets : [])
+      .map((t) => Number(t.price) || 0).filter((p) => p > 0);
+    const price = ticketPrices.length ? Math.min(...ticketPrices) : Number(j.adultPrice || 0);
+    return {
+      type: 'event_activity',
+      id: j.id,
+      name: j.title,
+      slug: j.slug,
+      image: j.thumbnail || j.mainBanner,
+      price,
+      currency: j.currency || 'INR',
+      location: j.city || j.venueName || null,
+      detailHref: `/events-activities/${j.slug}`,
+      meta: { category: j.category, startDate: j.startDate },
     };
   }
 

@@ -281,6 +281,8 @@ const createHotel = asyncHandler(async (req, res) => {
 
     const primaryImageFile = req.files?.primaryImage?.[0];
     const galleryFiles = req.files?.gallery || [];
+    // Instant-upload forms send already-hosted URLs instead of files.
+    const galleryUrls = parseJsonField(body.galleryUrls, []);
 
     const hotel = await Hotel.create(
       {
@@ -288,7 +290,7 @@ const createHotel = asyncHandler(async (req, res) => {
         slug,
         shortDescription: body.shortDescription || null,
         description: body.description || null,
-        primaryImage: primaryImageFile ? buildUrl(primaryImageFile) : null,
+        primaryImage: body.primaryImageUrl || (primaryImageFile ? buildUrl(primaryImageFile) : null),
         videoUrl: body.videoUrl || null,
         videoType: body.videoType || null,
         locationId: body.locationId ? parseInt(body.locationId, 10) : null,
@@ -322,14 +324,11 @@ const createHotel = asyncHandler(async (req, res) => {
     if (facilityIds.length) await hotel.setFacilities(facilityIds, { transaction: t });
     if (nearbyPlaceIds.length) await hotel.setNearbyPlaces(nearbyPlaceIds, { transaction: t });
 
-    // Gallery
-    if (galleryFiles.length) {
+    // Gallery — from uploaded files and/or instant-upload URLs.
+    const galleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...galleryUrls];
+    if (galleryAll.length) {
       await HotelImage.bulkCreate(
-        galleryFiles.map((f, i) => ({
-          hotelId: hotel.id,
-          url: buildUrl(f),
-          sortOrder: i,
-        })),
+        galleryAll.map((url, i) => ({ hotelId: hotel.id, url, sortOrder: i })),
         { transaction: t }
       );
     }
@@ -388,7 +387,10 @@ const updateHotel = asyncHandler(async (req, res) => {
 
   if (body.faqs !== undefined) hotel.faqs = parseJsonField(body.faqs, []);
 
-  if (primaryImageFile) {
+  // Instant-upload URL takes precedence; fall back to a multipart file.
+  if (body.primaryImageUrl !== undefined && body.primaryImageUrl !== '') {
+    hotel.primaryImage = body.primaryImageUrl;
+  } else if (primaryImageFile) {
     if (hotel.primaryImage) removeFileIfLocal(hotel.primaryImage);
     hotel.primaryImage = buildUrl(primaryImageFile);
   }
@@ -398,7 +400,8 @@ const updateHotel = asyncHandler(async (req, res) => {
   if (body.facilityIds !== undefined) await hotel.setFacilities(parseIntArray(body.facilityIds));
   if (body.nearbyPlaceIds !== undefined) await hotel.setNearbyPlaces(parseIntArray(body.nearbyPlaceIds));
 
-  if (galleryFiles.length) {
+  const newGalleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+  if (newGalleryAll.length) {
     if (body.replaceGallery === 'true') {
       const existing = await HotelImage.findAll({ where: { hotelId: hotel.id } });
       existing.forEach((g) => removeFileIfLocal(g.url));
@@ -406,11 +409,7 @@ const updateHotel = asyncHandler(async (req, res) => {
     }
     const offset = await HotelImage.count({ where: { hotelId: hotel.id } });
     await HotelImage.bulkCreate(
-      galleryFiles.map((f, i) => ({
-        hotelId: hotel.id,
-        url: buildUrl(f),
-        sortOrder: offset + i,
-      }))
+      newGalleryAll.map((url, i) => ({ hotelId: hotel.id, url, sortOrder: offset + i })),
     );
   }
 

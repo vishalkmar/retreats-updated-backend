@@ -6,6 +6,7 @@ const {
   FieldReview,
   Contract,
   Auditor,
+  PwaListingConfig,
 } = require('../models');
 const { ok, fail } = require('../../utils/response');
 const { getUploadedUrl } = require('../../utils/uploads');
@@ -783,6 +784,44 @@ const downloadContractPdf = asyncHandler(async (req, res) => {
   }
 });
 
+// --- List on website -----------------------------------------------------
+// The central officer pushes an approved property to the admin's listing
+// queue. Eligible once the property is final-approved (and through the
+// contract stages). Idempotent: re-pressing just refreshes the timestamp and
+// keeps the existing draft config.
+const LISTING_ELIGIBLE = [
+  PROPERTY_STATUS.FINAL_APPROVED,
+  PROPERTY_STATUS.CONTRACT_SENT,
+  PROPERTY_STATUS.CONTRACT_SIGNED,
+  PROPERTY_STATUS.COMPLETED,
+];
+
+const listOnWebsite = asyncHandler(async (req, res) => {
+  const property = await Property.findOne({
+    where: { id: req.params.id, ...visibilityFilter(req.pwaUser.id) },
+  });
+  if (!property) return fail(res, 'Property not found', 404);
+
+  if (!LISTING_ELIGIBLE.includes(property.status)) {
+    return fail(res, 'Property must be final-approved before it can be listed on the website', 400);
+  }
+
+  property.listingSubmittedAt = property.listingSubmittedAt || new Date();
+  await property.save();
+
+  // Create the admin's draft listing config if it doesn't exist yet.
+  let config = await PwaListingConfig.findOne({ where: { propertyId: property.id } });
+  if (!config) {
+    config = await PwaListingConfig.create({ propertyId: property.id, listingStatus: 'draft' });
+  }
+
+  return ok(
+    res,
+    { propertyId: property.id, listingSubmittedAt: property.listingSubmittedAt, listingStatus: config.listingStatus },
+    'Sent to the website team — configure & publish from the admin panel',
+  );
+});
+
 module.exports = {
   listProperties,
   getProperty,
@@ -792,6 +831,7 @@ module.exports = {
   followUpProperty,
   approveProperty,
   rejectProperty,
+  listOnWebsite,
   uploadInitialContract,
   uploadFinalContract,
   completeSelfContract,

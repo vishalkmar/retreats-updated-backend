@@ -192,7 +192,7 @@ const createActivity = asyncHandler(async (req, res) => {
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
         currency: body.currency || 'INR',
-        mainImage: mainImageFile ? buildUrl(mainImageFile) : null,
+        mainImage: body.mainImageUrl || (mainImageFile ? buildUrl(mainImageFile) : null),
         descriptionRich: body.descriptionRich || null,
         highlightsRich: body.highlightsRich || null,
         minAge: body.minAge ? parseInt(body.minAge, 10) : null,
@@ -206,13 +206,10 @@ const createActivity = asyncHandler(async (req, res) => {
       { transaction: t }
     );
 
-    if (galleryFiles.length) {
+    const galleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+    if (galleryAll.length) {
       await AddOnActivityImage.bulkCreate(
-        galleryFiles.map((f, i) => ({
-          activityId: item.id,
-          url: buildUrl(f),
-          sortOrder: i,
-        })),
+        galleryAll.map((url, i) => ({ activityId: item.id, url, sortOrder: i })),
         { transaction: t }
       );
     }
@@ -277,14 +274,17 @@ const updateActivity = asyncHandler(async (req, res) => {
 
   if (body.faqs !== undefined) item.faqs = parseJsonField(body.faqs, []);
 
-  if (mainImageFile) {
+  if (body.mainImageUrl !== undefined && body.mainImageUrl !== '') {
+    item.mainImage = body.mainImageUrl;
+  } else if (mainImageFile) {
     if (item.mainImage) removeFileIfLocal(item.mainImage);
     item.mainImage = buildUrl(mainImageFile);
   }
 
   await item.save();
 
-  if (galleryFiles.length) {
+  const newGalleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+  if (newGalleryAll.length) {
     if (body.replaceGallery === 'true') {
       const existing = await AddOnActivityImage.findAll({ where: { activityId: item.id } });
       existing.forEach((g) => removeFileIfLocal(g.url));
@@ -292,11 +292,7 @@ const updateActivity = asyncHandler(async (req, res) => {
     }
     const offset = await AddOnActivityImage.count({ where: { activityId: item.id } });
     await AddOnActivityImage.bulkCreate(
-      galleryFiles.map((f, i) => ({
-        activityId: item.id,
-        url: buildUrl(f),
-        sortOrder: offset + i,
-      }))
+      newGalleryAll.map((url, i) => ({ activityId: item.id, url, sortOrder: offset + i })),
     );
   }
 

@@ -198,7 +198,7 @@ const createEvent = asyncHandler(async (req, res) => {
       currency: body.currency || 'INR',
       minAge: body.minAge ? parseInt(body.minAge, 10) : null,
       maxAge: body.maxAge ? parseInt(body.maxAge, 10) : null,
-      mainImage: mainImageFile ? buildUrl(mainImageFile) : null,
+      mainImage: body.mainImageUrl || (mainImageFile ? buildUrl(mainImageFile) : null),
       mapEmbedHtml: body.mapEmbedHtml || null,
       aboutRich: body.aboutRich || null,
       highlightsRich: body.highlightsRich || null,
@@ -211,9 +211,10 @@ const createEvent = asyncHandler(async (req, res) => {
       sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
     }, { transaction: t });
 
-    if (galleryFiles.length) {
+    const galleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+    if (galleryAll.length) {
       await EventImage.bulkCreate(
-        galleryFiles.map((f, i) => ({ eventId: event.id, url: buildUrl(f), sortOrder: i })),
+        galleryAll.map((url, i) => ({ eventId: event.id, url, sortOrder: i })),
         { transaction: t }
       );
     }
@@ -265,14 +266,17 @@ const updateEvent = asyncHandler(async (req, res) => {
 
   if (body.sports !== undefined) event.sports = parseJsonField(body.sports, []);
 
-  if (mainImageFile) {
+  if (body.mainImageUrl !== undefined && body.mainImageUrl !== '') {
+    event.mainImage = body.mainImageUrl;
+  } else if (mainImageFile) {
     if (event.mainImage) removeFileIfLocal(event.mainImage);
     event.mainImage = buildUrl(mainImageFile);
   }
 
   await event.save();
 
-  if (galleryFiles.length) {
+  const newGalleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+  if (newGalleryAll.length) {
     if (body.replaceGallery === 'true') {
       const existing = await EventImage.findAll({ where: { eventId: event.id } });
       existing.forEach((g) => removeFileIfLocal(g.url));
@@ -280,7 +284,7 @@ const updateEvent = asyncHandler(async (req, res) => {
     }
     const offset = await EventImage.count({ where: { eventId: event.id } });
     await EventImage.bulkCreate(
-      galleryFiles.map((f, i) => ({ eventId: event.id, url: buildUrl(f), sortOrder: offset + i }))
+      newGalleryAll.map((url, i) => ({ eventId: event.id, url, sortOrder: offset + i })),
     );
   }
 

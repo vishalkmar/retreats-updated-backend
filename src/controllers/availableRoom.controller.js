@@ -217,7 +217,7 @@ const createRoom = asyncHandler(async (req, res) => {
         maxOccupancy: body.maxOccupancy ? parseInt(body.maxOccupancy, 10) : 2,
         maxChildrenFree: body.maxChildrenFree ? parseInt(body.maxChildrenFree, 10) : 0,
         extraPersonTiers: normalizeTiers(parseJsonField(body.extraPersonTiers, [])),
-        mainImage: mainImageFile ? buildUrl(mainImageFile) : null,
+        mainImage: body.mainImageUrl || (mainImageFile ? buildUrl(mainImageFile) : null),
         highlightsRich: body.highlightsRich || null,
         descriptionRich: body.descriptionRich || null,
         isFeatured: body.isFeatured === 'true',
@@ -233,13 +233,10 @@ const createRoom = asyncHandler(async (req, res) => {
     if (facilityIds.length) await room.setFacilities(facilityIds, { transaction: t });
     if (viewIds.length) await room.setViews(viewIds, { transaction: t });
 
-    if (galleryFiles.length) {
+    const galleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+    if (galleryAll.length) {
       await AvailableRoomImage.bulkCreate(
-        galleryFiles.map((f, i) => ({
-          roomId: room.id,
-          url: buildUrl(f),
-          sortOrder: i,
-        })),
+        galleryAll.map((url, i) => ({ roomId: room.id, url, sortOrder: i })),
         { transaction: t }
       );
     }
@@ -306,7 +303,9 @@ const updateRoom = asyncHandler(async (req, res) => {
     if (body[f] !== undefined) room[f] = body[f] === 'true' || body[f] === true;
   });
 
-  if (mainImageFile) {
+  if (body.mainImageUrl !== undefined && body.mainImageUrl !== '') {
+    room.mainImage = body.mainImageUrl;
+  } else if (mainImageFile) {
     if (room.mainImage) removeFileIfLocal(room.mainImage);
     room.mainImage = buildUrl(mainImageFile);
   }
@@ -316,7 +315,8 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (body.facilityIds !== undefined) await room.setFacilities(parseIntArray(body.facilityIds));
   if (body.viewIds !== undefined) await room.setViews(parseIntArray(body.viewIds));
 
-  if (galleryFiles.length) {
+  const newGalleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+  if (newGalleryAll.length) {
     if (body.replaceGallery === 'true') {
       const existing = await AvailableRoomImage.findAll({ where: { roomId: room.id } });
       existing.forEach((g) => removeFileIfLocal(g.url));
@@ -324,11 +324,7 @@ const updateRoom = asyncHandler(async (req, res) => {
     }
     const offset = await AvailableRoomImage.count({ where: { roomId: room.id } });
     await AvailableRoomImage.bulkCreate(
-      galleryFiles.map((f, i) => ({
-        roomId: room.id,
-        url: buildUrl(f),
-        sortOrder: offset + i,
-      }))
+      newGalleryAll.map((url, i) => ({ roomId: room.id, url, sortOrder: offset + i })),
     );
   }
 

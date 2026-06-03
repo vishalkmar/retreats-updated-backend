@@ -27,6 +27,7 @@ const AvailableRoom = require('./availableRoom.model');
 const AvailableRoomImage = require('./availableRoomImage.model');
 const AddOnActivity = require('./addOnActivity.model');
 const AddOnActivityImage = require('./addOnActivityImage.model');
+const EventActivity = require('./eventActivity.model');
 const EventType = require('./eventType.model');
 const Event = require('./event.model');
 const EventImage = require('./eventImage.model');
@@ -77,6 +78,7 @@ const db = {
   AvailableRoomImage,
   AddOnActivity,
   AddOnActivityImage,
+  EventActivity,
   EventType,
   Event,
   EventImage,

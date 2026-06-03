@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/admin.controller');
+const listingCtrl = require('../controllers/listing.controller');
 const { authenticate } = require('../../middlewares/auth.middleware');
 const { buildUploader } = require('../../middlewares/upload.middleware');
 
@@ -7,6 +8,15 @@ const upload = buildUploader('pwa-profiles');
 
 // All admin PWA routes require an authenticated site admin.
 router.use(authenticate);
+
+// Website listing — configure & publish onboarded properties.
+router.get('/listings/queue', listingCtrl.listQueue);
+router.get('/listings/listed', listingCtrl.listListed);
+router.get('/listings/:id', listingCtrl.getOne);
+router.get('/listings-process', listingCtrl.onProcess);
+router.put('/listings/:id/config', listingCtrl.saveConfig);
+router.post('/listings/:id/publish', listingCtrl.publish);
+router.post('/listings/:id/unlist', listingCtrl.unlist);
 
 // Auditors
 router.get('/auditors', ctrl.listAuditors);

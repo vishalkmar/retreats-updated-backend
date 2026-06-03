@@ -20,6 +20,7 @@ router.put('/properties/:id/suggestion', ctrl.updateSuggestion);
 router.post('/properties/:id/follow-up', ctrl.followUpProperty);
 router.post('/properties/:id/approve', ctrl.approveProperty);
 router.post('/properties/:id/reject', ctrl.rejectProperty);
+router.post('/properties/:id/list-on-website', ctrl.listOnWebsite);
 
 // Phase 4 review.
 router.get('/phase4/:id', phase4Ctrl.getForOfficer);

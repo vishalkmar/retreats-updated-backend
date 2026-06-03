@@ -329,7 +329,7 @@ const createPackage = asyncHandler(async (req, res) => {
         slug,
         shortDescription: body.shortDescription || null,
         description: body.description || null,
-        primaryImage: primaryImageFile ? buildUrl(primaryImageFile) : null,
+        primaryImage: body.primaryImageUrl || (primaryImageFile ? buildUrl(primaryImageFile) : null),
         videoUrl: body.videoUrl || null,
         cityId: body.cityId ? parseInt(body.cityId, 10) : null,
         cityName: body.cityName ? String(body.cityName).trim() : null,
@@ -374,7 +374,7 @@ const createPackage = asyncHandler(async (req, res) => {
         faqs: parseJsonField(body.faqs, []),
         hostName: body.hostName || null,
         hostBio: body.hostBio || null,
-        hostImage: hostImageFile ? buildUrl(hostImageFile) : null,
+        hostImage: body.hostImageUrl || (hostImageFile ? buildUrl(hostImageFile) : null),
         // PWA Check-Availability assignment
         pwaOwnerId:       body.pwaOwnerId ? parseInt(body.pwaOwnerId, 10) : null,
         pwaSalespersonId: body.pwaSalespersonId ? parseInt(body.pwaSalespersonId, 10) : null,
@@ -405,13 +405,10 @@ const createPackage = asyncHandler(async (req, res) => {
     if (trainerIds.length) await pkg.setTrainers(trainerIds, { transaction: t });
 
     // Gallery
-    if (galleryFiles.length) {
+    const galleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+    if (galleryAll.length) {
       await PackageImage.bulkCreate(
-        galleryFiles.map((f, i) => ({
-          packageId: pkg.id,
-          url: buildUrl(f),
-          sortOrder: i,
-        })),
+        galleryAll.map((url, i) => ({ packageId: pkg.id, url, sortOrder: i })),
         { transaction: t }
       );
     }
@@ -482,11 +479,15 @@ const updatePackage = asyncHandler(async (req, res) => {
     if (body[f] !== undefined) pkg[f] = parseJsonField(body[f], []);
   });
 
-  if (primaryImageFile) {
+  if (body.primaryImageUrl !== undefined && body.primaryImageUrl !== '') {
+    pkg.primaryImage = body.primaryImageUrl;
+  } else if (primaryImageFile) {
     if (pkg.primaryImage) removeFileIfLocal(pkg.primaryImage);
     pkg.primaryImage = buildUrl(primaryImageFile);
   }
-  if (hostImageFile) {
+  if (body.hostImageUrl !== undefined && body.hostImageUrl !== '') {
+    pkg.hostImage = body.hostImageUrl;
+  } else if (hostImageFile) {
     if (pkg.hostImage) removeFileIfLocal(pkg.hostImage);
     pkg.hostImage = buildUrl(hostImageFile);
   }
@@ -501,7 +502,8 @@ const updatePackage = asyncHandler(async (req, res) => {
   if (body.cultureIds !== undefined) await pkg.setCultures(parseIntArray(body.cultureIds));
   if (body.trainerIds !== undefined) await pkg.setTrainers(parseIntArray(body.trainerIds));
 
-  if (galleryFiles.length) {
+  const newGalleryAll = [...galleryFiles.map((f) => buildUrl(f)), ...parseJsonField(body.galleryUrls, [])];
+  if (newGalleryAll.length) {
     if (body.replaceGallery === 'true') {
       const existing = await PackageImage.findAll({ where: { packageId: pkg.id } });
       existing.forEach((g) => removeFileIfLocal(g.url));
@@ -509,11 +511,7 @@ const updatePackage = asyncHandler(async (req, res) => {
     }
     const offset = await PackageImage.count({ where: { packageId: pkg.id } });
     await PackageImage.bulkCreate(
-      galleryFiles.map((f, i) => ({
-        packageId: pkg.id,
-        url: buildUrl(f),
-        sortOrder: offset + i,
-      }))
+      newGalleryAll.map((url, i) => ({ packageId: pkg.id, url, sortOrder: offset + i })),
     );
   }
 

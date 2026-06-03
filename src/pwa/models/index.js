@@ -17,6 +17,7 @@ const AvailabilityLead = require('./availabilityLead.model');
 const VoiceCallLog = require('./voiceCallLog.model');
 const PropertyPhase4Data = require('./propertyPhase4Data.model');
 const Notification = require('./notification.model');
+const PwaListingConfig = require('./listingConfig.model');
 
 // Property <-> Auditor
 Property.belongsTo(Auditor, { foreignKey: 'auditorId', as: 'auditor' });
@@ -73,6 +74,10 @@ VoiceCallLog.belongsTo(AvailabilityLead, { foreignKey: 'leadId', as: 'lead' });
 Property.hasMany(PropertyPhase4Data, { foreignKey: 'propertyId', as: 'phase4', onDelete: 'CASCADE' });
 PropertyPhase4Data.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
 
+// Property <-> Website listing config (1:1)
+Property.hasOne(PwaListingConfig, { foreignKey: 'propertyId', as: 'listingConfig', onDelete: 'CASCADE' });
+PwaListingConfig.belongsTo(Property, { foreignKey: 'propertyId', as: 'property' });
+
 module.exports = {
   Auditor,
   Officer,
@@ -89,4 +94,5 @@ module.exports = {
   VoiceCallLog,
   PropertyPhase4Data,
   Notification,
+  PwaListingConfig,
 };

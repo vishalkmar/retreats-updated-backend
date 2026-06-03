@@ -76,6 +76,10 @@ const Property = sequelize.define(
     finalApprovedAt: { type: DataTypes.DATE, allowNull: true },  // Phase 4 approval
     submittedAt: { type: DataTypes.DATE, allowNull: true },
     phase4SubmittedAt: { type: DataTypes.DATE, allowNull: true },
+
+    // Set when the central officer presses "List on website now" — this moves
+    // the property into the admin's listing-configuration queue.
+    listingSubmittedAt: { type: DataTypes.DATE, allowNull: true },
   },
   {
     tableName: 'pwa_properties',

@@ -30,6 +30,7 @@ router.use('/featured-tabs', require('./featuredTab.routes'));
 router.use('/hotels', require('./hotel.routes'));
 router.use('/rooms', require('./availableRoom.routes'));
 router.use('/add-ons', require('./addOnActivity.routes'));
+router.use('/event-activities', require('./eventActivity.routes'));
 router.use('/event-types', require('./eventType.routes'));
 router.use('/events', require('./event.routes'));
 router.use('/promo-banners', require('./promoBanner.routes'));
