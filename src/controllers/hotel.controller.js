@@ -159,7 +159,9 @@ const listPublic = asyncHandler(async (req, res) => {
   // each card so we never show "INR 0" when the admin forgot to set it.
   if (rows.length) {
     const cheap = await AvailableRoom.findAll({
-      where: { hotelId: { [Op.in]: ids }, isActive: true },
+      // Only rooms with a real price (> 0) count — otherwise a single
+      // free/unpriced room would drag the "from" price down to ₹0.
+      where: { hotelId: { [Op.in]: ids }, isActive: true, price: { [Op.gt]: 0 } },
       attributes: [
         'hotelId',
         [sequelize.fn('MIN', sequelize.col('price')), 'minPrice'],
@@ -214,7 +216,7 @@ const priceStats = asyncHandler(async (req, res) => {
 // to show — e.g. "Contact us" or hide the price entirely).
 const cheapestRoomPriceFor = async (hotelId) => {
   const row = await AvailableRoom.findOne({
-    where: { hotelId, isActive: true },
+    where: { hotelId, isActive: true, price: { [Op.gt]: 0 } },
     attributes: ['price', 'priceOriginal', 'currency'],
     order: [['price', 'ASC']],
   });

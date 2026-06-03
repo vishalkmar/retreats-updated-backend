@@ -35,6 +35,19 @@ const PwaListingConfig = sequelize.define(
     //   [{ id, kind: 'text'|'image', name, value }]  (value = string or URL)
     customFields: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
 
+    // Hotel-gallery overrides: { removed:[url], added:[url] }.
+    gallery: { type: DataTypes.JSON, allowNull: false, defaultValue: {} },
+
+    // Per-room overrides keyed by the PWA room's `rid`:
+    //   { [rid]: { mainImage, removed:[url], added:[url], customFields:[…] } }
+    roomConfig: { type: DataTypes.JSON, allowNull: false, defaultValue: {} },
+
+    // Per-section overrides keyed by the PWA sectionKey (cctv, garden, …):
+    //   { [sectionKey]: { removed:[url], added:[url], customFields:[…] } }
+    // Section photos feed the website gallery; section custom fields render as
+    // their own titled blocks on the public detail page.
+    sectionConfig: { type: DataTypes.JSON, allowNull: false, defaultValue: {} },
+
     // Lifecycle of the listing config itself.
     listingStatus: {
       type: DataTypes.ENUM('draft', 'listed', 'unlisted'),

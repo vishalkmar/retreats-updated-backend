@@ -10,6 +10,7 @@ const {
   RoomView,
   sequelize,
 } = require('../models');
+const { normalizeGstRate } = require('../config/gst');
 const { ok, created, fail } = require('../utils/response');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
@@ -212,6 +213,7 @@ const createRoom = asyncHandler(async (req, res) => {
         slug,
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
+        gstRate: normalizeGstRate(body.gstRate),
         currency: body.currency || 'INR',
         roomSize: body.roomSize || null,
         maxOccupancy: body.maxOccupancy ? parseInt(body.maxOccupancy, 10) : 2,
@@ -290,6 +292,7 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (body.price !== undefined && body.price !== '') room.price = parseFloat(body.price);
   if (body.priceOriginal !== undefined)
     room.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
+  if (body.gstRate !== undefined) room.gstRate = normalizeGstRate(body.gstRate);
   if (body.maxOccupancy !== undefined && body.maxOccupancy !== '')
     room.maxOccupancy = parseInt(body.maxOccupancy, 10);
   if (body.maxChildrenFree !== undefined && body.maxChildrenFree !== '')

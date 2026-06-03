@@ -31,6 +31,8 @@ const AddOnActivity = sequelize.define(
     price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     priceOriginal: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
+    // GST percent added to the price at checkout (0 = Off). One of 0/5/18/28/40.
+    gstRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 
     // Media
     mainImage: { type: DataTypes.STRING(500), allowNull: true },

@@ -10,6 +10,7 @@ const {
   sequelize,
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
+const { normalizeGstRate } = require('../config/gst');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
 const buildUrl = (file) => getUploadedUrl(file);
@@ -191,6 +192,7 @@ const createActivity = asyncHandler(async (req, res) => {
         address: body.address ? String(body.address).trim() : null,
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
+        gstRate: normalizeGstRate(body.gstRate),
         currency: body.currency || 'INR',
         mainImage: body.mainImageUrl || (mainImageFile ? buildUrl(mainImageFile) : null),
         descriptionRich: body.descriptionRich || null,
@@ -263,6 +265,7 @@ const updateActivity = asyncHandler(async (req, res) => {
   if (body.price !== undefined && body.price !== '') item.price = parseFloat(body.price);
   if (body.priceOriginal !== undefined)
     item.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
+  if (body.gstRate !== undefined) item.gstRate = normalizeGstRate(body.gstRate);
   if (body.minAge !== undefined) item.minAge = body.minAge === '' ? null : parseInt(body.minAge, 10);
   if (body.maxAge !== undefined) item.maxAge = body.maxAge === '' ? null : parseInt(body.maxAge, 10);
   if (body.sortOrder !== undefined && body.sortOrder !== '')

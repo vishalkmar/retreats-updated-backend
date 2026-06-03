@@ -68,6 +68,12 @@ const Hotel = sequelize.define(
     // FAQs — JSON array of { question, answer }
     faqs: { type: DataTypes.JSON, defaultValue: [] },
 
+    // Admin-added "additional fields" from the PWA→website listing config.
+    // Rendered as their own titled blocks on the public detail page (NOT merged
+    // into the About description). Shape: [{ name, type:'text'|'image', value }]
+    // where text `value` is rich-text HTML and image `value` is a URL.
+    extraSections: { type: DataTypes.JSON, defaultValue: [] },
+
     // Flags
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true },

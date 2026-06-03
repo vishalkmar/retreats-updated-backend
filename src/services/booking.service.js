@@ -57,6 +57,7 @@ const fetchItem = async (type, id) => {
       price: Number(j.priceFrom || 0),
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
+      gstRate: Number(j.gstRate) || 0,
       location: j.location?.name || j.city?.name || j.locationDetail || null,
       detailHref: `/retreats/${j.slug}`,
       meta: {
@@ -96,6 +97,7 @@ const fetchItem = async (type, id) => {
       price: Number(j.price || 0),
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
+      gstRate: Number(j.gstRate) || 0,
       location: j.hotel?.location?.name || j.hotel?.city?.name || null,
       hotel: j.hotel ? { id: j.hotel.id, name: j.hotel.name, slug: j.hotel.slug } : null,
       detailHref: j.hotel?.slug ? `/hotels/${j.hotel.slug}/rooms/${j.slug}` : null,
@@ -125,6 +127,7 @@ const fetchItem = async (type, id) => {
       price: Number(j.price || 0),
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
+      gstRate: Number(j.gstRate) || 0,
       location: j.location?.name || null,
       detailHref: `/events/${j.slug}`,
       meta: {
@@ -154,6 +157,7 @@ const fetchItem = async (type, id) => {
       price: Number(j.price || 0),
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
+      gstRate: Number(j.gstRate) || 0,
       location: j.location?.name || null,
       detailHref: `/add-ons/${j.slug}`,
       meta: {
@@ -179,6 +183,7 @@ const fetchItem = async (type, id) => {
       image: j.thumbnail || j.mainBanner,
       price,
       currency: j.currency || 'INR',
+      gstRate: Number(j.gstRate) || 0,
       location: j.city || j.venueName || null,
       detailHref: `/events-activities/${j.slug}`,
       meta: { category: j.category, startDate: j.startDate },
@@ -239,7 +244,10 @@ const computePricing = ({
   }
 
   const subtotalPaise = unitPricePaise * quantity + extraPersonsPaise;
-  const taxPaise = Math.round(subtotalPaise * TAX_RATE);
+  // Per-item GST rate (0 = Off, the default). Falls back to the platform
+  // default only when the item predates the gstRate column (undefined).
+  const itemRate = item.gstRate == null ? TAX_RATE : Number(item.gstRate) / 100;
+  const taxPaise = Math.round(subtotalPaise * itemRate);
 
   // Discounts are applied after tax (matches MMT's display). Clamp so we
   // never go below zero — defensive in case a coupon overshoots.
@@ -258,7 +266,8 @@ const computePricing = ({
     unitPricePaise,
     subtotalPaise,
     taxPaise,
-    taxRate: TAX_RATE,
+    taxRate: itemRate,
+    gstRate: item.gstRate == null ? null : Number(item.gstRate),
     walletDiscountPaise,
     couponDiscountPaise: safeCoupon,
     totalPaise,

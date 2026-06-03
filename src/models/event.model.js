@@ -27,6 +27,8 @@ const Event = sequelize.define(
     price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     priceOriginal: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
+    // GST percent added to the price at checkout (0 = Off). One of 0/5/18/28/40.
+    gstRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 
     // Age limits
     minAge: { type: DataTypes.INTEGER, allowNull: true },
@@ -57,6 +59,10 @@ const Event = sequelize.define(
       allowNull: true,
       comment: 'Per-item refund tiers — same shape as RefundPolicy.tiers. When null the global policy is used.',
     },
+
+    // Admin-added "additional fields" from the PWA→website listing config,
+    // rendered as their own titled blocks. Shape: [{ name, type, value }].
+    extraSections: { type: DataTypes.JSON, defaultValue: [] },
 
     // Flags
     isFeatured: { type: DataTypes.BOOLEAN, defaultValue: false },

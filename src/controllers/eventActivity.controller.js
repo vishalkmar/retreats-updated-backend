@@ -3,6 +3,7 @@ const slugify = require('slugify');
 const { Op } = require('sequelize');
 const { EventActivity } = require('../models');
 const { ok, created, fail } = require('../utils/response');
+const { normalizeGstRate } = require('../config/gst');
 
 const CATEGORIES = EventActivity.CATEGORIES;
 
@@ -61,6 +62,8 @@ const applyBody = (row, body, { isCreate }) => {
   COLUMN_JSON.forEach((f) => {
     if (body[f] !== undefined) row[f] = parseJson(body[f], Array.isArray(row[f]) ? [] : {});
   });
+  // GST applies globally to every price/ticket on this activity (0 = Off).
+  if (body.gstRate !== undefined) row.gstRate = normalizeGstRate(body.gstRate);
   if (isCreate) {
     // sensible JSON defaults so columns never go null
     const objDefaults = new Set(['categoryData', 'schedule']);

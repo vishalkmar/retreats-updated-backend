@@ -12,7 +12,8 @@ const {
 } = require('../models');
 const { ok, fail } = require('../../utils/response');
 const { Hotel, Package, Event } = require('../../models');
-const { publishListing } = require('../services/listingPublish.service');
+const { publishListing, removeEntity } = require('../services/listingPublish.service');
+const { normalizeGstRate } = require('../../config/gst');
 
 // Everything the admin needs to render a property as a dynamic, view-rich
 // configuration form: basics + every captured section (incl. rooms), owner,
@@ -68,22 +69,66 @@ const getOne = asyncHandler(async (req, res) => {
 // Normalise the markup blob from the admin form into a trustworthy shape.
 //   { mode:'total'|'per_room', type:'percent'|'fixed', value:Number,
 //     perRoom: { [roomKey]: { type, value } } }
+const normalizeMod = (v) => ({
+  kind: v?.kind === 'discount' ? 'discount' : 'markup',
+  type: v?.type === 'fixed' ? 'fixed' : 'percent',
+  value: Math.max(0, parseFloat(v?.value) || 0),
+});
+
 const normalizeMarkup = (raw) => {
   const m = raw && typeof raw === 'object' ? raw : {};
   const out = {
     mode: m.mode === 'per_room' ? 'per_room' : 'total',
-    type: m.type === 'fixed' ? 'fixed' : 'percent',
-    value: Math.max(0, parseFloat(m.value) || 0),
+    ...normalizeMod(m),
+    // Global GST (used in "same for all" mode, and as the per-room fallback).
+    gstRate: normalizeGstRate(m.gstRate),
     perRoom: {},
   };
   if (m.perRoom && typeof m.perRoom === 'object') {
     for (const [k, v] of Object.entries(m.perRoom)) {
       if (!v) continue;
-      out.perRoom[k] = {
-        type: v.type === 'fixed' ? 'fixed' : 'percent',
-        value: Math.max(0, parseFloat(v.value) || 0),
-      };
+      out.perRoom[k] = normalizeMod(v);
     }
+  }
+  return out;
+};
+
+// Pass-through sanitiser for per-room/gallery image + custom-field overrides.
+const normalizeRoomConfig = (raw) => {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [rid, v] of Object.entries(raw)) {
+    if (!v || typeof v !== 'object') continue;
+    out[rid] = {
+      // Admin-entered base price (PWA onboarding does not capture room prices).
+      price: v.price === '' || v.price == null ? null : Math.max(0, parseFloat(v.price) || 0),
+      // Per-room GST (0 = Off). Falls back to the global markup GST at publish.
+      gstRate: v.gstRate == null || v.gstRate === '' ? null : normalizeGstRate(v.gstRate),
+      mainImage: v.mainImage ? String(v.mainImage) : '',
+      removed: Array.isArray(v.removed) ? v.removed.map(String) : [],
+      added: Array.isArray(v.added) ? v.added.map(String) : [],
+      customFields: normalizeCustomFields(v.customFields),
+    };
+  }
+  return out;
+};
+
+const normalizeGallery = (raw) => ({
+  removed: Array.isArray(raw?.removed) ? raw.removed.map(String) : [],
+  added: Array.isArray(raw?.added) ? raw.added.map(String) : [],
+});
+
+// Per-section image + custom-field overrides keyed by sectionKey.
+const normalizeSectionConfig = (raw) => {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [key, v] of Object.entries(raw)) {
+    if (!v || typeof v !== 'object') continue;
+    out[key] = {
+      removed: Array.isArray(v.removed) ? v.removed.map(String) : [],
+      added: Array.isArray(v.added) ? v.added.map(String) : [],
+      customFields: normalizeCustomFields(v.customFields),
+    };
   }
   return out;
 };
@@ -121,6 +166,9 @@ const saveConfig = asyncHandler(async (req, res) => {
   config.categoryId = body.categoryId ? parseInt(body.categoryId, 10) : null;
   config.markup = normalizeMarkup(body.markup);
   config.customFields = normalizeCustomFields(body.customFields);
+  config.gallery = normalizeGallery(body.gallery);
+  config.roomConfig = normalizeRoomConfig(body.roomConfig);
+  config.sectionConfig = normalizeSectionConfig(body.sectionConfig);
   await config.save();
 
   return ok(res, { config }, 'Listing configuration saved');
@@ -136,20 +184,16 @@ const publish = asyncHandler(async (req, res) => {
   if (!config || !config.propertyType) {
     return fail(res, 'Set the property type before listing on the website', 400);
   }
-  if (config.listingStatus === 'listed') {
-    return fail(res, 'This property is already listed. Unlist it first to re-publish.', 400);
-  }
 
-  // Re-listing a previously-unlisted property just re-activates the entity we
-  // already created (no duplicates). First-time listing materialises it.
+  // Always re-materialise from the latest config. If a previous website entity
+  // exists (re-publish), delete it first so config edits (markup, custom
+  // fields, image swaps, type change) actually take effect.
   if (config.linkedId && config.linkedType) {
-    await setEntityActive(config.linkedType, config.linkedId, true);
-  } else {
-    const result = await publishListing(property, config);
-    config.linkedType = result.linkedType;
-    config.linkedId = result.linkedId;
+    await removeEntity(config.linkedType, config.linkedId);
   }
-
+  const result = await publishListing(property, config);
+  config.linkedType = result.linkedType;
+  config.linkedId = result.linkedId;
   config.listingStatus = 'listed';
   config.listedAt = new Date();
   await config.save();

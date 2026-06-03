@@ -59,6 +59,8 @@ const Package = sequelize.define(
       comment: 'Strike-through price for discount display',
     },
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
+    // GST percent added to the price at checkout (0 = Off). One of 0/5/18/28/40.
+    gstRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 
     // Stats
     rating: { type: DataTypes.DECIMAL(3, 2), defaultValue: 0 },
@@ -176,6 +178,11 @@ const Package = sequelize.define(
       defaultValue: [],
       comment: 'Array of { question, answer }',
     },
+
+    // Admin-added "additional fields" from the PWA→website listing config,
+    // rendered as their own titled blocks on the public detail page.
+    // Shape: [{ name, type:'text'|'image', value }].
+    extraSections: { type: DataTypes.JSON, defaultValue: [] },
 
     // Host
     hostName: { type: DataTypes.STRING(160), allowNull: true },

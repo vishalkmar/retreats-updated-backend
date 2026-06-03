@@ -8,19 +8,22 @@ const { Hotel, AvailableRoom, HotelImage, AvailableRoomImage, Package, Event } =
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Apply a markup ({ type:'percent'|'fixed', value }) to a base price.
-const applyMarkup = (price, mk) => {
+// Apply a price modifier. `kind` = 'markup' (add) | 'discount' (subtract).
+// `type` = 'percent' | 'fixed'.
+const applyMod = (price, mk) => {
   const p = Number(price) || 0;
   if (!mk) return p;
   const v = Number(mk.value) || 0;
-  return mk.type === 'fixed' ? Math.max(0, p + v) : Math.max(0, p * (1 + v / 100));
+  if (!v) return p;
+  const delta = mk.type === 'fixed' ? v : p * (v / 100);
+  return Math.max(0, mk.kind === 'discount' ? p - delta : p + delta);
 };
 
-// Pick the markup for a specific room: per-room override if configured, else
+// Pick the modifier for a specific room: per-room override if configured, else
 // the top-level "total" markup applied uniformly per room.
-const roomMarkupFor = (markup, roomKey) => {
+const roomModFor = (markup, roomKey) => {
   if (markup?.mode === 'per_room' && markup.perRoom?.[roomKey]) return markup.perRoom[roomKey];
-  return { type: markup?.type || 'percent', value: markup?.value || 0 };
+  return { kind: markup?.kind || 'markup', type: markup?.type || 'percent', value: markup?.value || 0 };
 };
 
 const uniqueSlug = async (Model, base, scope = {}) => {
@@ -47,6 +50,33 @@ const roomPhotos = (room) => {
   return out.filter(Boolean);
 };
 
+// Every photo captured across all PWA sections (cctv, garden, …) — candidates
+// for the hotel gallery. Honours per-section remove/add overrides from the
+// admin's sectionConfig.
+const sectionPhotos = (property, sectionConfig = {}) => {
+  const out = [];
+  (property.fields || []).forEach((f) => {
+    if (f.sectionKey === 'rooms') return; // room photos go to the rooms
+    const sc = sectionConfig[f.sectionKey] || {};
+    const removed = new Set(Array.isArray(sc.removed) ? sc.removed : []);
+    (Array.isArray(f.photoUrls) ? f.photoUrls : []).forEach((u) => { if (u && !removed.has(u)) out.push(u); });
+    (Array.isArray(sc.added) ? sc.added : []).forEach((u) => { if (u) out.push(u); });
+  });
+  return out;
+};
+
+// Section-level custom fields → standalone titled blocks (same shape as the
+// global additional fields).
+const sectionExtraSections = (sectionConfig = {}) => {
+  const out = [];
+  Object.values(sectionConfig).forEach((sc) => {
+    (sc?.customFields || []).forEach((f) => {
+      if (f && f.value) out.push({ name: String(f.name || '').trim(), type: f.kind === 'image' ? 'image' : 'text', value: String(f.value) });
+    });
+  });
+  return out;
+};
+
 const customTextHtml = (fields) => (fields || [])
   .filter((f) => f.kind === 'text' && f.value)
   .map((f) => `<p><strong>${esc(f.name)}:</strong> ${esc(f.value)}</p>`)
@@ -56,13 +86,42 @@ const customImages = (fields) => (fields || [])
   .filter((f) => f.kind === 'image' && f.value)
   .map((f) => f.value);
 
+// Admin "additional fields" → standalone titled sections on the public detail
+// page (NOT folded into the About description). Text values keep their HTML so
+// the rich-text editor's formatting survives; image values are URLs.
+const buildExtraSections = (fields) => (fields || [])
+  .filter((f) => f.value)
+  .map((f, i) => ({
+    name: String(f.name || '').trim(),
+    type: f.kind === 'image' ? 'image' : 'text',
+    value: String(f.value),
+    sortOrder: i,
+  }));
+
+// Apply admin remove/add overrides to a source image list.
+const applyImageOverrides = (source, override = {}) => {
+  const removed = new Set(Array.isArray(override.removed) ? override.removed : []);
+  const added = Array.isArray(override.added) ? override.added : [];
+  const kept = source.filter((u) => !removed.has(u));
+  // de-dup while preserving order
+  return [...new Set([...kept, ...added])];
+};
+
 // ── publishers ───────────────────────────────────────────────────────────
 
 async function publishHotel(property, config) {
   const markup = config.markup || {};
+  const roomConfig = config.roomConfig || {};
   const listingImgs = (property.listingImages || []).map((li) => li.url).filter(Boolean);
   const rooms = getRooms(property);
-  const firstPhoto = listingImgs[0] || (rooms.length ? roomPhotos(rooms[0])[0] : null);
+
+  // Hotel gallery candidates: listing images + every (override-applied) section
+  // photo. Admin can remove any and add their own (config.gallery.added). Custom
+  // IMAGE fields go to their own titled sections, not the gallery.
+  const sectionConfig = config.sectionConfig || {};
+  const galleryCandidates = [...listingImgs, ...sectionPhotos(property, sectionConfig)];
+  const hotelGallery = applyImageOverrides(galleryCandidates, config.gallery || {});
+  const firstPhoto = hotelGallery[0] || (rooms.length ? roomPhotos(rooms[0])[0] : null);
 
   const slug = await uniqueSlug(Hotel, property.name);
   const hotel = await Hotel.create({
@@ -72,25 +131,42 @@ async function publishHotel(property, config) {
     cityName: property.locationText || null,
     primaryImage: firstPhoto || null,
     shortDescription: property.locationText || null,
-    description: customTextHtml(config.customFields) || null,
+    // Admin "additional fields" (global + per-section) render as their own
+    // sections, not the About description.
+    description: null,
+    extraSections: [...buildExtraSections(config.customFields), ...sectionExtraSections(sectionConfig)],
     currency: 'INR',
     isActive: true,
   });
 
-  const galleryUrls = [...listingImgs, ...customImages(config.customFields)];
-  if (galleryUrls.length) {
-    await HotelImage.bulkCreate(galleryUrls.map((url, i) => ({ hotelId: hotel.id, url, sortOrder: i })));
+  if (hotelGallery.length) {
+    await HotelImage.bulkCreate(hotelGallery.map((url, i) => ({ hotelId: hotel.id, url, sortOrder: i })));
   }
 
   let cheapest = null;
   for (const room of rooms) {
-    const price = applyMarkup(room.price, roomMarkupFor(markup, room.rid));
-    if (cheapest === null || price < cheapest) cheapest = price;
+    const rc = roomConfig[room.rid] || {};
+    // Base price: admin-entered (PWA doesn't capture room prices) wins, else any
+    // PWA value, then markup/discount is applied on top.
+    const basePrice = rc.price != null && rc.price !== '' ? Number(rc.price) : Number(room.price) || 0;
+    const price = applyMod(basePrice, roomModFor(markup, room.rid));
+    // Per-room GST → falls back to the global markup GST.
+    const gstRate = rc.gstRate != null ? rc.gstRate : (markup.gstRate || 0);
+    // Only priced rooms (> 0) set the "from" price so a free/unpriced room
+    // never drags it to ₹0.
+    if (price > 0 && (cheapest === null || price < cheapest)) cheapest = price;
     const rslug = await uniqueSlug(AvailableRoom, room.category || 'room', { hotelId: hotel.id });
+
+    // Room facilities + admin custom fields → description.
     const facHtml = Array.isArray(room.facilities) && room.facilities.length
       ? `<ul>${room.facilities.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`
       : '';
-    const photos = roomPhotos(room);
+    const descHtml = [facHtml, customTextHtml(rc.customFields)].filter(Boolean).join('');
+
+    // Room photos with admin remove/add + optional main-image override.
+    const photos = applyImageOverrides(roomPhotos(room), rc);
+    const mainImage = rc.mainImage || photos[0] || null;
+
     const created = await AvailableRoom.create({
       ownerType: 'hotel',
       hotelId: hotel.id,
@@ -98,17 +174,19 @@ async function publishHotel(property, config) {
       name: room.category || 'Room',
       slug: rslug,
       price,
+      gstRate,
       currency: 'INR',
       roomSize: room.sizeSqft ? `${room.sizeSqft} sqft` : null,
       maxOccupancy: 2,
-      mainImage: photos[0] || null,
+      mainImage,
       highlightsRich: room.highlights || null,
-      descriptionRich: facHtml || null,
+      descriptionRich: descHtml || null,
       extraPersonTiers: Array.isArray(room.extraPersonTiers) ? room.extraPersonTiers : [],
       isActive: true,
     });
-    if (photos.length) {
-      await AvailableRoomImage.bulkCreate(photos.map((url, i) => ({ roomId: created.id, url, sortOrder: i })));
+    const roomGallery = [...new Set([...(rc.mainImage ? [rc.mainImage] : []), ...photos, ...customImages(rc.customFields)])];
+    if (roomGallery.length) {
+      await AvailableRoomImage.bulkCreate(roomGallery.map((url, i) => ({ roomId: created.id, url, sortOrder: i })));
     }
   }
 
@@ -120,30 +198,51 @@ async function publishHotel(property, config) {
   return { linkedType: 'hotel', linkedId: hotel.id };
 }
 
-// Package / Event share a basic shape (no per-room model). Price = cheapest
-// room with markup applied (so onboarding pricing still flows through).
+// Package / Event share a basic shape (no per-room model).
 async function publishSimple(property, config, kind) {
   const Model = kind === 'event' ? Event : Package;
   const markup = config.markup || {};
+  const roomConfig = config.roomConfig || {};
   const rooms = getRooms(property);
   const listingImgs = (property.listingImages || []).map((li) => li.url).filter(Boolean);
-  const prices = rooms.map((r) => applyMarkup(r.price, roomMarkupFor(markup, r.rid))).filter((p) => p > 0);
+  const basePriceOf = (r) => {
+    const rc = roomConfig[r.rid] || {};
+    return rc.price != null && rc.price !== '' ? Number(rc.price) : Number(r.price) || 0;
+  };
+  const prices = rooms.map((r) => applyMod(basePriceOf(r), roomModFor(markup, r.rid))).filter((p) => p > 0);
+  // Packages/events can also carry a single price typed straight into the
+  // config (no rooms) — fall back to the top-level markup value as the price.
   const cheapest = prices.length ? Math.min(...prices) : 0;
 
+  const sectionConfig = config.sectionConfig || {};
+  const galleryCandidates = [...listingImgs, ...sectionPhotos(property, sectionConfig)];
+  const gallery = applyImageOverrides(galleryCandidates, config.gallery || {});
+
   const slug = await uniqueSlug(Model, property.name);
-  const common = {
+  const extraSections = [...buildExtraSections(config.customFields), ...sectionExtraSections(sectionConfig)];
+  // Use the cheapest priced tier's GST, else the global markup GST.
+  let gstRate = markup.gstRate || 0;
+  const cheapRoom = rooms.find((r) => applyMod(basePriceOf(r), roomModFor(markup, r.rid)) === cheapest);
+  if (cheapRoom) {
+    const rc = roomConfig[cheapRoom.rid] || {};
+    gstRate = rc.gstRate != null ? rc.gstRate : (markup.gstRate || 0);
+  }
+
+  const base = {
     name: property.name,
     slug,
     shortDescription: property.locationText || null,
-    description: customTextHtml(config.customFields) || null,
+    description: null,
+    extraSections,
+    gstRate,
     currency: 'INR',
     isActive: true,
+    primaryImage: gallery[0] || null,
   };
-  // priceFrom exists on both Package and Event; primaryImage too.
-  common.primaryImage = listingImgs[0] || (rooms.length ? roomPhotos(rooms[0])[0] : null);
-  common.priceFrom = cheapest;
-
-  const row = await Model.create(common);
+  // Event uses `price`, Package uses `priceFrom`.
+  if (kind === 'event') base.price = cheapest;
+  else base.priceFrom = cheapest;
+  const row = await Model.create(base);
   return { linkedType: kind, linkedId: row.id };
 }
 
@@ -156,4 +255,22 @@ async function publishListing(property, config) {
   throw new Error('Pick a property type (hotel / package / event) before listing');
 }
 
-module.exports = { publishListing, applyMarkup };
+// Remove a previously-materialised entity (+ its rooms/images) so a re-publish
+// re-creates it from the latest config.
+async function removeEntity(type, id) {
+  if (!type || !id) return;
+  if (type === 'hotel') {
+    const rooms = await AvailableRoom.findAll({ where: { hotelId: id }, attributes: ['id'] });
+    const roomIds = rooms.map((r) => r.id);
+    if (roomIds.length) await AvailableRoomImage.destroy({ where: { roomId: roomIds } });
+    await AvailableRoom.destroy({ where: { hotelId: id } });
+    await HotelImage.destroy({ where: { hotelId: id } });
+    await Hotel.destroy({ where: { id } });
+  } else if (type === 'package') {
+    await Package.destroy({ where: { id } });
+  } else if (type === 'event') {
+    await Event.destroy({ where: { id } });
+  }
+}
+
+module.exports = { publishListing, removeEntity, applyMod };

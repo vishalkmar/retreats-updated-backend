@@ -70,6 +70,9 @@ const EventActivity = sequelize.define(
     couplePrice: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     groupPrice: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
+    // GST percent added to every price/ticket at checkout (0 = Off). One of
+    // 0/5/18/28/40 — applies globally to this activity's pricing.
+    gstRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 
     // Description
     shortDescription: { type: DataTypes.TEXT, allowNull: true },

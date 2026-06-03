@@ -18,6 +18,7 @@ const {
 } = require('../models');
 const reviewCtrl = require('./review.controller');
 const { ok, created, fail } = require('../utils/response');
+const { normalizeGstRate } = require('../config/gst');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
 const removeFileIfLocal = (url) => removeUploadedFile(url);
@@ -345,6 +346,7 @@ const createPackage = asyncHandler(async (req, res) => {
         maxGroupSize: body.maxGroupSize ? parseInt(body.maxGroupSize, 10) : 30,
         priceFrom: body.priceFrom ? parseFloat(body.priceFrom) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
+        gstRate: normalizeGstRate(body.gstRate),
         currency: body.currency || 'INR',
         freeCancellation: body.freeCancellation === 'false' ? false : true,
         isGoldHost: body.isGoldHost === 'true',
@@ -469,6 +471,7 @@ const updatePackage = asyncHandler(async (req, res) => {
   if (body.priceFrom !== undefined && body.priceFrom !== '') pkg.priceFrom = parseFloat(body.priceFrom);
   if (body.priceOriginal !== undefined)
     pkg.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
+  if (body.gstRate !== undefined) pkg.gstRate = normalizeGstRate(body.gstRate);
 
   const boolFields = ['availableAllYear', 'freeCancellation', 'isGoldHost', 'isFeatured', 'isPopular', 'isActive'];
   boolFields.forEach((f) => {
