@@ -58,6 +58,7 @@ const sectionPhotos = (property, sectionConfig = {}) => {
   (property.fields || []).forEach((f) => {
     if (f.sectionKey === 'rooms') return; // room photos go to the rooms
     const sc = sectionConfig[f.sectionKey] || {};
+    if (sc.enabled === false) return; // section hidden from the website
     const removed = new Set(Array.isArray(sc.removed) ? sc.removed : []);
     (Array.isArray(f.photoUrls) ? f.photoUrls : []).forEach((u) => { if (u && !removed.has(u)) out.push(u); });
     (Array.isArray(sc.added) ? sc.added : []).forEach((u) => { if (u) out.push(u); });
@@ -66,10 +67,11 @@ const sectionPhotos = (property, sectionConfig = {}) => {
 };
 
 // Section-level custom fields → standalone titled blocks (same shape as the
-// global additional fields).
+// global additional fields). Hidden sections are skipped.
 const sectionExtraSections = (sectionConfig = {}) => {
   const out = [];
   Object.values(sectionConfig).forEach((sc) => {
+    if (sc?.enabled === false) return;
     (sc?.customFields || []).forEach((f) => {
       if (f && f.value) out.push({ name: String(f.name || '').trim(), type: f.kind === 'image' ? 'image' : 'text', value: String(f.value) });
     });
@@ -77,9 +79,12 @@ const sectionExtraSections = (sectionConfig = {}) => {
   return out;
 };
 
+// Rich custom text fields → HTML. The NAME is escaped (plain text) but the
+// VALUE is left raw because it already comes from the rich-text editor as HTML
+// (escaping it would surface literal <div> tags on the page).
 const customTextHtml = (fields) => (fields || [])
   .filter((f) => f.kind === 'text' && f.value)
-  .map((f) => `<p><strong>${esc(f.name)}:</strong> ${esc(f.value)}</p>`)
+  .map((f) => `${f.name ? `<h4>${esc(f.name)}</h4>` : ''}${f.value}`)
   .join('');
 
 const customImages = (fields) => (fields || [])
@@ -97,6 +102,17 @@ const buildExtraSections = (fields) => (fields || [])
     value: String(f.value),
     sortOrder: i,
   }));
+
+const emptyHtml = (s) => !s || !String(s).replace(/<[^>]*>/g, '').replace(/&nbsp;|\s/g, '').trim();
+
+// Map a PWA bed type to a sensible max occupancy.
+const bedToOccupancy = (bedType) => {
+  const t = String(bedType || '').toLowerCase();
+  if (t.includes('triple')) return 3;
+  if (t.includes('quad') || t.includes('family')) return 4;
+  if (t.includes('single')) return 1;
+  return 2; // double / default
+};
 
 // Apply admin remove/add overrides to a source image list.
 const applyImageOverrides = (source, override = {}) => {
@@ -130,10 +146,12 @@ async function publishHotel(property, config) {
     address: property.address || null,
     cityName: property.locationText || null,
     primaryImage: firstPhoto || null,
-    shortDescription: property.locationText || null,
+    // Predefined editable content → proper website sections.
+    shortDescription: emptyHtml(config.shortDescription) ? (property.locationText || null) : config.shortDescription,
+    description: emptyHtml(config.longDescription) ? null : config.longDescription,
+    highlightsRich: emptyHtml(config.highlights) ? null : config.highlights,
     // Admin "additional fields" (global + per-section) render as their own
-    // sections, not the About description.
-    description: null,
+    // titled blocks, not the About description.
     extraSections: [...buildExtraSections(config.customFields), ...sectionExtraSections(sectionConfig)],
     currency: 'INR',
     isActive: true,
@@ -155,13 +173,21 @@ async function publishHotel(property, config) {
     // Only priced rooms (> 0) set the "from" price so a free/unpriced room
     // never drags it to ₹0.
     if (price > 0 && (cheapest === null || price < cheapest)) cheapest = price;
-    const rslug = await uniqueSlug(AvailableRoom, room.category || 'room', { hotelId: hotel.id });
+    const roomName = (rc.name && rc.name.trim()) || room.category || 'Room';
+    const rslug = await uniqueSlug(AvailableRoom, roomName, { hotelId: hotel.id });
 
-    // Room facilities + admin custom fields → description.
-    const facHtml = Array.isArray(room.facilities) && room.facilities.length
-      ? `<ul>${room.facilities.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`
-      : '';
-    const descHtml = [facHtml, customTextHtml(rc.customFields)].filter(Boolean).join('');
+    // Facilities: admin override (strings) else the PWA list. Stored as a list
+    // for chip display.
+    const facilities = Array.isArray(rc.facilities) ? rc.facilities : (Array.isArray(room.facilities) ? room.facilities : []);
+    // Per-room pre-defined content (admin) → room columns. Long description also
+    // carries any admin custom fields appended after it.
+    const highlights = !emptyHtml(rc.highlights) ? rc.highlights : (room.highlights || null);
+    const longDesc = !emptyHtml(rc.longDescription) ? rc.longDescription : null;
+    const customHtml = customTextHtml(rc.customFields);
+    const descHtml = [longDesc, customHtml].filter(Boolean).join('') || null;
+    const shortDesc = !emptyHtml(rc.shortDescription) ? rc.shortDescription : null;
+    const inclusions = !emptyHtml(rc.inclusions) ? rc.inclusions : null;
+    const exclusions = !emptyHtml(rc.exclusions) ? rc.exclusions : null;
 
     // Room photos with admin remove/add + optional main-image override.
     const photos = applyImageOverrides(roomPhotos(room), rc);
@@ -171,16 +197,20 @@ async function publishHotel(property, config) {
       ownerType: 'hotel',
       hotelId: hotel.id,
       packageId: null,
-      name: room.category || 'Room',
+      name: roomName,
       slug: rslug,
       price,
       gstRate,
       currency: 'INR',
       roomSize: room.sizeSqft ? `${room.sizeSqft} sqft` : null,
-      maxOccupancy: 2,
+      maxOccupancy: bedToOccupancy(room.bedType),
+      facilitiesList: facilities,
       mainImage,
-      highlightsRich: room.highlights || null,
-      descriptionRich: descHtml || null,
+      shortDescription: shortDesc,
+      highlightsRich: highlights,
+      descriptionRich: descHtml,
+      inclusionsRich: inclusions,
+      exclusionsRich: exclusions,
       extraPersonTiers: Array.isArray(room.extraPersonTiers) ? room.extraPersonTiers : [],
       isActive: true,
     });
@@ -231,8 +261,9 @@ async function publishSimple(property, config, kind) {
   const base = {
     name: property.name,
     slug,
-    shortDescription: property.locationText || null,
-    description: null,
+    shortDescription: emptyHtml(config.shortDescription) ? (property.locationText || null) : config.shortDescription,
+    description: emptyHtml(config.longDescription) ? null : config.longDescription,
+    highlightsRich: emptyHtml(config.highlights) ? null : config.highlights,
     extraSections,
     gstRate,
     currency: 'INR',

@@ -104,6 +104,14 @@ const normalizeRoomConfig = (raw) => {
       price: v.price === '' || v.price == null ? null : Math.max(0, parseFloat(v.price) || 0),
       // Per-room GST (0 = Off). Falls back to the global markup GST at publish.
       gstRate: v.gstRate == null || v.gstRate === '' ? null : normalizeGstRate(v.gstRate),
+      // Editable name + facilities (strings) + rich content override the PWA data.
+      name: v.name != null ? String(v.name).slice(0, 200) : null,
+      facilities: Array.isArray(v.facilities) ? v.facilities.map((f) => String(f).slice(0, 120)).filter(Boolean).slice(0, 100) : null,
+      shortDescription: v.shortDescription != null ? String(v.shortDescription).slice(0, 20000) : null,
+      longDescription: v.longDescription != null ? String(v.longDescription).slice(0, 50000) : null,
+      highlights: v.highlights != null ? String(v.highlights).slice(0, 50000) : null,
+      inclusions: v.inclusions != null ? String(v.inclusions).slice(0, 50000) : null,
+      exclusions: v.exclusions != null ? String(v.exclusions).slice(0, 50000) : null,
       mainImage: v.mainImage ? String(v.mainImage) : '',
       removed: Array.isArray(v.removed) ? v.removed.map(String) : [],
       added: Array.isArray(v.added) ? v.added.map(String) : [],
@@ -125,6 +133,8 @@ const normalizeSectionConfig = (raw) => {
   for (const [key, v] of Object.entries(raw)) {
     if (!v || typeof v !== 'object') continue;
     out[key] = {
+      // Whether this section's photos/fields are pushed to the website.
+      enabled: v.enabled === false ? false : true,
       removed: Array.isArray(v.removed) ? v.removed.map(String) : [],
       added: Array.isArray(v.added) ? v.added.map(String) : [],
       customFields: normalizeCustomFields(v.customFields),
@@ -166,6 +176,9 @@ const saveConfig = asyncHandler(async (req, res) => {
   config.categoryId = body.categoryId ? parseInt(body.categoryId, 10) : null;
   config.markup = normalizeMarkup(body.markup);
   config.customFields = normalizeCustomFields(body.customFields);
+  config.shortDescription = body.shortDescription ? String(body.shortDescription).slice(0, 20000) : null;
+  config.longDescription = body.longDescription ? String(body.longDescription).slice(0, 50000) : null;
+  config.highlights = body.highlights ? String(body.highlights).slice(0, 50000) : null;
   config.gallery = normalizeGallery(body.gallery);
   config.roomConfig = normalizeRoomConfig(body.roomConfig);
   config.sectionConfig = normalizeSectionConfig(body.sectionConfig);

@@ -42,6 +42,11 @@ const AvailableRoom = sequelize.define(
     // extraPersonTiers). Kept for backward compatibility.
     maxChildrenFree: { type: DataTypes.INTEGER, defaultValue: 0 },
 
+    // Free-text facility list (used by PWA-published rooms whose facilities are
+    // plain strings, not the Facility taxonomy). Rendered as chips on the
+    // public room card/detail. Array of strings.
+    facilitiesList: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
+
     // Extra-person pricing tiers by age band. Each entry:
     //   { ageFrom, ageTo, priceType: 'free'|'custom', price, bed: 'with'|'without' }
     // `price` is per person, per night. Drives real-time booking maths and the
@@ -52,8 +57,11 @@ const AvailableRoom = sequelize.define(
     mainImage: { type: DataTypes.STRING(500), allowNull: true },
 
     // Rich-text content
+    shortDescription: { type: DataTypes.TEXT('long'), allowNull: true },
     highlightsRich: { type: DataTypes.TEXT('long'), allowNull: true },
     descriptionRich: { type: DataTypes.TEXT('long'), allowNull: true },
+    inclusionsRich: { type: DataTypes.TEXT('long'), allowNull: true },
+    exclusionsRich: { type: DataTypes.TEXT('long'), allowNull: true },
 
     // Cancellation / refund
     isRefundable: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },

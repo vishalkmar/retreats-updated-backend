@@ -35,6 +35,12 @@ const PwaListingConfig = sequelize.define(
     //   [{ id, kind: 'text'|'image', name, value }]  (value = string or URL)
     customFields: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
 
+    // Pre-defined editable content shown as proper sections on the website
+    // (so PWA listings read like normal hotels, not a dump of custom fields).
+    shortDescription: { type: DataTypes.TEXT('long'), allowNull: true },
+    longDescription: { type: DataTypes.TEXT('long'), allowNull: true },
+    highlights: { type: DataTypes.TEXT('long'), allowNull: true },
+
     // Hotel-gallery overrides: { removed:[url], added:[url] }.
     gallery: { type: DataTypes.JSON, allowNull: false, defaultValue: {} },
 

@@ -806,7 +806,7 @@ const listOnWebsite = asyncHandler(async (req, res) => {
     return fail(res, 'Property must be final-approved before it can be listed on the website', 400);
   }
 
-  property.listingSubmittedAt = property.listingSubmittedAt || new Date();
+  property.listingSubmittedAt = new Date();
   await property.save();
 
   // Create the admin's draft listing config if it doesn't exist yet.
