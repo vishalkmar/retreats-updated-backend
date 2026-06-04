@@ -65,34 +65,32 @@ const requestOtp = asyncHandler(async (req, res) => {
     ipAddress: req.ip,
   });
 
-  // Best-effort send — surface the failure but keep the OTP record so we
-  // can debug if Brevo is down.
+  // Send the code by email. The plaintext code is NEVER returned to the client
+  // (a leaked code would defeat the whole point of 2-factor email verification).
+  // If Brevo can't deliver, fail loudly so the issue is visible and fixed —
+  // in development we additionally log the code to the SERVER console only, so
+  // local testing isn't blocked without exposing it over the API.
   const IS_DEV = process.env.NODE_ENV !== 'production';
-  let emailDelivered = true;
-  let emailError = null;
   try {
     await sendUserOtp({ to: email, code, isNewUser });
   } catch (err) {
     console.error('[user-auth] OTP email failed:', err.message);
-    emailDelivered = false;
-    emailError = err.message;
-    // In production we still block (no point letting users in if no code was
-    // delivered). In dev — where Brevo is often unreachable (IP whitelist,
-    // unverified sender) — we return the code so testing isn't blocked.
-    if (!IS_DEV) {
-      return fail(res, 'Could not send the verification email. Please try again.', 502);
+    if (IS_DEV) {
+      console.log(`[user-auth][DEV] OTP for ${email}: ${code} (server-console only)`);
+      // Let dev testing proceed to the code screen; code is in the server log.
+      return ok(res, {
+        email, isNewUser, expiresInMinutes: OTP_TTL_MIN, emailDelivered: false,
+      }, isNewUser ? 'OTP sent — verify to create your account' : 'OTP sent — verify to sign in');
     }
+    return fail(res, 'Could not send the verification email. Please try again shortly.', 502);
   }
 
   return ok(res, {
     email,
     isNewUser,
     expiresInMinutes: OTP_TTL_MIN,
-    emailDelivered,
-    ...(IS_DEV && !emailDelivered ? { devCode: code, emailError } : {}),
-  }, emailDelivered
-    ? (isNewUser ? 'OTP sent — verify to create your account' : 'OTP sent — verify to sign in')
-    : `Email failed (${emailError || 'unknown'}) — use the dev code shown`);
+    emailDelivered: true,
+  }, isNewUser ? 'OTP sent — verify to create your account' : 'OTP sent — verify to sign in');
 });
 
 // POST /api/user-auth/resend-otp { email }

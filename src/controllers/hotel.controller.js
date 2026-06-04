@@ -88,8 +88,6 @@ const listPublic = asyncHandler(async (req, res) => {
   } = req.query;
 
   const where = { isActive: true };
-  if (minPrice) where.priceFrom = { ...(where.priceFrom || {}), [Op.gte]: parseFloat(minPrice) };
-  if (maxPrice) where.priceFrom = { ...(where.priceFrom || {}), [Op.lte]: parseFloat(maxPrice) };
   if (minRating) where.rating = { [Op.gte]: parseFloat(minRating) };
   if (starRating) {
     const stars = String(starRating).split(',').map((s) => parseInt(s, 10)).filter(Boolean);
@@ -105,6 +103,20 @@ const listPublic = asyncHandler(async (req, res) => {
   }
 
   const filterInclude = [];
+
+  // Price filter is based on the cheapest BOOKABLE room (price > 0) — this is
+  // exactly the "From" price shown on the card. A hotel appears when AT LEAST
+  // ONE of its active rooms falls inside the range (so a stale hotel.priceFrom
+  // can never leak a non-matching hotel into the results).
+  if (minPrice || maxPrice) {
+    const priceCond = { [Op.gt]: 0 };
+    if (minPrice) priceCond[Op.gte] = parseFloat(minPrice);
+    if (maxPrice) priceCond[Op.lte] = parseFloat(maxPrice);
+    filterInclude.push({
+      model: AvailableRoom, as: 'rooms', required: true, attributes: [],
+      where: { isActive: true, price: priceCond },
+    });
+  }
 
   // Lenient location matching — match via locationId FK OR cityId FK OR address
   // contains (so existing hotels without a locationId still show up).
