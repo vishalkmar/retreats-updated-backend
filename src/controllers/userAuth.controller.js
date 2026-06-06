@@ -82,7 +82,12 @@ const requestOtp = asyncHandler(async (req, res) => {
         email, isNewUser, expiresInMinutes: OTP_TTL_MIN, emailDelivered: false,
       }, isNewUser ? 'OTP sent — verify to create your account' : 'OTP sent — verify to sign in');
     }
-    return fail(res, 'Could not send the verification email. Please try again shortly.', 502);
+    // Temporary diagnostics: set MAIL_DEBUG=true in .env to surface the real
+    // SMTP error in the response (then remove it once email works).
+    const msg = process.env.MAIL_DEBUG === 'true'
+      ? `MAIL ERROR: ${err.message}`
+      : 'Could not send the verification email. Please try again shortly.';
+    return fail(res, msg, 502);
   }
 
   return ok(res, {

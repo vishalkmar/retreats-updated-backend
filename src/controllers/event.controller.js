@@ -12,6 +12,7 @@ const {
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
 const { normalizeGstRate } = require('../config/gst');
+const { normalizePriceType } = require('../config/priceType');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
 const buildUrl = (file) => getUploadedUrl(file);
@@ -197,6 +198,8 @@ const createEvent = asyncHandler(async (req, res) => {
       price: body.price ? parseFloat(body.price) : 0,
       priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
       gstRate: normalizeGstRate(body.gstRate),
+      priceType: normalizePriceType(body.priceType) || 'per_person',
+      priceLabel: body.priceLabel ? String(body.priceLabel).slice(0, 60) : null,
       currency: body.currency || 'INR',
       minAge: body.minAge ? parseInt(body.minAge, 10) : null,
       maxAge: body.maxAge ? parseInt(body.maxAge, 10) : null,
@@ -262,6 +265,8 @@ const updateEvent = asyncHandler(async (req, res) => {
   if (body.priceOriginal !== undefined)
     event.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
   if (body.gstRate !== undefined) event.gstRate = normalizeGstRate(body.gstRate);
+  if (body.priceType !== undefined) event.priceType = normalizePriceType(body.priceType) || event.priceType;
+  if (body.priceLabel !== undefined) event.priceLabel = body.priceLabel ? String(body.priceLabel).slice(0, 60) : null;
 
   ['isFeatured', 'isActive', 'isRefundable'].forEach((f) => {
     if (body[f] !== undefined) event[f] = body[f] === 'true' || body[f] === true;

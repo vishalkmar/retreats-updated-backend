@@ -11,6 +11,8 @@ const {
 } = require('../models');
 const { ok, created, fail } = require('../utils/response');
 const { normalizeGstRate } = require('../config/gst');
+const { normalizeTcsRate } = require('../config/tcs');
+const { normalizePriceType } = require('../config/priceType');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
 const buildUrl = (file) => getUploadedUrl(file);
@@ -193,6 +195,9 @@ const createActivity = asyncHandler(async (req, res) => {
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
         gstRate: normalizeGstRate(body.gstRate),
+        tcsRate: normalizeTcsRate(body.tcsRate),
+        priceType: normalizePriceType(body.priceType) || 'per_person',
+        priceLabel: body.priceLabel ? String(body.priceLabel).slice(0, 60) : null,
         currency: body.currency || 'INR',
         mainImage: body.mainImageUrl || (mainImageFile ? buildUrl(mainImageFile) : null),
         descriptionRich: body.descriptionRich || null,
@@ -266,6 +271,9 @@ const updateActivity = asyncHandler(async (req, res) => {
   if (body.priceOriginal !== undefined)
     item.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
   if (body.gstRate !== undefined) item.gstRate = normalizeGstRate(body.gstRate);
+  if (body.tcsRate !== undefined) item.tcsRate = normalizeTcsRate(body.tcsRate);
+  if (body.priceType !== undefined) item.priceType = normalizePriceType(body.priceType) || item.priceType;
+  if (body.priceLabel !== undefined) item.priceLabel = body.priceLabel ? String(body.priceLabel).slice(0, 60) : null;
   if (body.minAge !== undefined) item.minAge = body.minAge === '' ? null : parseInt(body.minAge, 10);
   if (body.maxAge !== undefined) item.maxAge = body.maxAge === '' ? null : parseInt(body.maxAge, 10);
   if (body.sortOrder !== undefined && body.sortOrder !== '')

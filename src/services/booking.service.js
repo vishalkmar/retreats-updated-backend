@@ -12,6 +12,8 @@ const {
   Booking,
 } = require('../models');
 
+const { priceUnitLabel } = require('../config/priceType');
+
 const TAX_RATE = Number(process.env.BOOKING_TAX_RATE || 0.18); // 18% GST default
 const ALLOWED_TYPES = ['package', 'room', 'event', 'addon', 'event_activity'];
 
@@ -58,6 +60,9 @@ const fetchItem = async (type, id) => {
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
       gstRate: Number(j.gstRate) || 0,
+      tcsRate: Number(j.tcsRate) || 0,
+      priceType: j.priceType || 'per_person',
+      priceLabel: j.priceLabel || null,
       location: j.location?.name || j.city?.name || j.locationDetail || null,
       detailHref: `/retreats/${j.slug}`,
       meta: {
@@ -98,6 +103,9 @@ const fetchItem = async (type, id) => {
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
       gstRate: Number(j.gstRate) || 0,
+      tcsRate: Number(j.tcsRate) || 0,
+      priceType: j.priceType || 'per_night',
+      priceLabel: j.priceLabel || null,
       location: j.hotel?.location?.name || j.hotel?.city?.name || null,
       hotel: j.hotel ? { id: j.hotel.id, name: j.hotel.name, slug: j.hotel.slug } : null,
       detailHref: j.hotel?.slug ? `/hotels/${j.hotel.slug}/rooms/${j.slug}` : null,
@@ -128,6 +136,9 @@ const fetchItem = async (type, id) => {
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
       gstRate: Number(j.gstRate) || 0,
+      tcsRate: Number(j.tcsRate) || 0,
+      priceType: j.priceType || 'per_person',
+      priceLabel: j.priceLabel || null,
       location: j.location?.name || null,
       detailHref: `/events/${j.slug}`,
       meta: {
@@ -158,6 +169,9 @@ const fetchItem = async (type, id) => {
       priceOriginal: j.priceOriginal ? Number(j.priceOriginal) : null,
       currency: j.currency || 'INR',
       gstRate: Number(j.gstRate) || 0,
+      tcsRate: Number(j.tcsRate) || 0,
+      priceType: j.priceType || 'per_person',
+      priceLabel: j.priceLabel || null,
       location: j.location?.name || null,
       detailHref: `/add-ons/${j.slug}`,
       meta: {
@@ -221,33 +235,49 @@ const computePricing = ({
   const unitPricePaise = toPaise(item.price);
   const extras = Array.isArray(extraPersons) ? extraPersons : [];
 
-  // Logic per type:
-  //   room  → unitPrice × nights × rooms  (+ per-night extra-person charges)
-  //   event → unitPrice × ticket count (guestCount)
-  //   package, addon → unitPrice × guests (per person)
+  // The admin-chosen priceType drives the multiplier (falls back to the legacy
+  // per-type default for items created before the column existed):
+  //   per_night  → × nights (× rooms for hotel rooms, + per-night extras)
+  //   per_person → × guests
+  //   package / custom → flat (× rooms for hotel rooms, × 1 otherwise)
+  const priceType = item.priceType || (item.type === 'room' ? 'per_night' : 'per_person');
+  const nights = Math.max(1, Number(units || 1));
+  const guests = Math.max(1, Number(guestCount || 1));
   let quantity;
   let roomsResolved = Math.max(1, Number(roomCount || 1));
   let extraPersonsPaise = 0;
+
   if (item.type === 'room') {
-    const nights = Math.max(1, Number(units || 1));
     const maxOcc = Math.max(1, Number(item.meta?.maxOccupancy || 2));
-    // Auto-grow the room count when the party (adults + extra guests) spills
-    // past one room's occupancy — like MMT splitting into a second room.
-    const totalPeople = Math.max(1, Number(guestCount || 1)) + extras.length;
+    // Auto-grow the room count when the party spills past one room's occupancy.
+    const totalPeople = guests + extras.length;
     roomsResolved = Math.max(roomsResolved, Math.ceil(totalPeople / maxOcc));
-    quantity = nights * roomsResolved;
-    const tiers = item.meta?.extraPersonTiers || [];
-    const perNightExtra = extras.reduce((sum, p) => sum + extraPersonPaise(tiers, p), 0);
-    extraPersonsPaise = perNightExtra * nights;
-  } else {
-    quantity = Math.max(1, Number(guestCount || 1));
+    if (priceType === 'per_person') {
+      quantity = totalPeople;
+    } else if (priceType === 'package' || priceType === 'custom') {
+      quantity = roomsResolved;
+    } else { // per_night
+      quantity = nights * roomsResolved;
+      const tiers = item.meta?.extraPersonTiers || [];
+      const perNightExtra = extras.reduce((sum, p) => sum + extraPersonPaise(tiers, p), 0);
+      extraPersonsPaise = perNightExtra * nights;
+    }
+  } else if (priceType === 'per_night') {
+    quantity = nights;
+  } else if (priceType === 'package' || priceType === 'custom') {
+    quantity = 1;
+  } else { // per_person (default for package / event / addon)
+    quantity = guests;
   }
 
   const subtotalPaise = unitPricePaise * quantity + extraPersonsPaise;
   // Per-item GST rate (0 = Off, the default). Falls back to the platform
   // default only when the item predates the gstRate column (undefined).
   const itemRate = item.gstRate == null ? TAX_RATE : Number(item.gstRate) / 100;
-  const taxPaise = Math.round(subtotalPaise * itemRate);
+  const tcsRate = item.tcsRate == null ? 0 : Number(item.tcsRate) / 100;
+  const gstPaise = Math.round(subtotalPaise * itemRate);
+  const tcsPaise = Math.round((subtotalPaise + gstPaise) * tcsRate);
+  const taxPaise = gstPaise + tcsPaise;
 
   // Discounts are applied after tax (matches MMT's display). Clamp so we
   // never go below zero — defensive in case a coupon overshoots.
@@ -265,15 +295,22 @@ const computePricing = ({
     currency: item.currency || 'INR',
     unitPricePaise,
     subtotalPaise,
+    gstPaise,
+    tcsPaise,
     taxPaise,
     taxRate: itemRate,
     gstRate: item.gstRate == null ? null : Number(item.gstRate),
+    tcsRate: item.tcsRate == null ? null : Number(item.tcsRate),
+    priceType,
+    priceUnitLabel: priceUnitLabel(priceType, item.priceLabel),
     walletDiscountPaise,
     couponDiscountPaise: safeCoupon,
     totalPaise,
     display: {
       unitPrice: fromPaise(unitPricePaise),
       subtotal: fromPaise(subtotalPaise),
+      gst: fromPaise(gstPaise),
+      tcs: fromPaise(tcsPaise),
       tax: fromPaise(taxPaise),
       extraPersons: fromPaise(extraPersonsPaise),
       walletDiscount: fromPaise(walletDiscountPaise),
@@ -296,7 +333,14 @@ const buildItemSnapshot = (item) => ({
   detailHref: item.detailHref,
   hotel: item.hotel || null,
   meta: item.meta || {},
-  pricedAt: { price: item.price, currency: item.currency || 'INR' },
+  pricedAt: {
+    price: item.price,
+    currency: item.currency || 'INR',
+    gstRate: item.gstRate == null ? null : Number(item.gstRate),
+    tcsRate: item.tcsRate == null ? null : Number(item.tcsRate),
+    priceType: item.priceType || null,
+    priceLabel: item.priceLabel || null,
+  },
 });
 
 // Compute units & sensible defaults given user-supplied dates. Pure function —

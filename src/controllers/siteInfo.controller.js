@@ -14,6 +14,9 @@ const DEFAULTS = {
   phones: [],
   addresses: [],
   socials: [], // { platform, url }
+  // Admin-editable legal pages (rich-text HTML), shown on /privacy and /terms.
+  privacyPolicy: '',
+  termsConditions: '',
 };
 
 const readInfo = async () => {
@@ -62,6 +65,8 @@ const update = asyncHandler(async (req, res) => {
   if (body.companyName !== undefined) next.companyName = body.companyName || '';
   if (body.tagline !== undefined) next.tagline = body.tagline || '';
   if (body.description !== undefined) next.description = body.description || '';
+  if (body.privacyPolicy !== undefined) next.privacyPolicy = body.privacyPolicy || '';
+  if (body.termsConditions !== undefined) next.termsConditions = body.termsConditions || '';
 
   if (body.emails !== undefined) {
     next.emails = parseList(body.emails)

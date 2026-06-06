@@ -54,7 +54,11 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  // NOTE: X-User-Auth carries the public-site user token (kept separate from the
+  // admin Authorization header). It MUST be allow-listed or the browser blocks
+  // every signed-in user request (/me, /wishlist, …) — which silently logs the
+  // user back out right after a successful login.
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-User-Auth'],
 };
 
 app.use(cors(corsOptions));

@@ -30,6 +30,11 @@ const AvailableRoom = sequelize.define(
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
     // GST percent added to the price at checkout (0 = Off). One of 0/5/18/28/40.
     gstRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    // TCS percent applied on price + GST (0 = Off).
+    tcsRate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    // How the price is charged + the public unit label. See config/priceType.js.
+    priceType: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'per_night' },
+    priceLabel: { type: DataTypes.STRING(60), allowNull: true },
 
     // Specs
     roomSize: {

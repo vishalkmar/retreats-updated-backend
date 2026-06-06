@@ -11,6 +11,8 @@ const {
   sequelize,
 } = require('../models');
 const { normalizeGstRate } = require('../config/gst');
+const { normalizeTcsRate } = require('../config/tcs');
+const { normalizePriceType } = require('../config/priceType');
 const { ok, created, fail } = require('../utils/response');
 const { getUploadedUrl, removeUploadedFile } = require('../utils/uploads');
 
@@ -214,6 +216,9 @@ const createRoom = asyncHandler(async (req, res) => {
         price: body.price ? parseFloat(body.price) : 0,
         priceOriginal: body.priceOriginal ? parseFloat(body.priceOriginal) : null,
         gstRate: normalizeGstRate(body.gstRate),
+        tcsRate: normalizeTcsRate(body.tcsRate),
+        priceType: normalizePriceType(body.priceType) || 'per_night',
+        priceLabel: body.priceLabel ? String(body.priceLabel).slice(0, 60) : null,
         currency: body.currency || 'INR',
         roomSize: body.roomSize || null,
         maxOccupancy: body.maxOccupancy ? parseInt(body.maxOccupancy, 10) : 2,
@@ -293,6 +298,9 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (body.priceOriginal !== undefined)
     room.priceOriginal = body.priceOriginal === '' ? null : parseFloat(body.priceOriginal);
   if (body.gstRate !== undefined) room.gstRate = normalizeGstRate(body.gstRate);
+  if (body.tcsRate !== undefined) room.tcsRate = normalizeTcsRate(body.tcsRate);
+  if (body.priceType !== undefined) room.priceType = normalizePriceType(body.priceType) || room.priceType;
+  if (body.priceLabel !== undefined) room.priceLabel = body.priceLabel ? String(body.priceLabel).slice(0, 60) : null;
   if (body.maxOccupancy !== undefined && body.maxOccupancy !== '')
     room.maxOccupancy = parseInt(body.maxOccupancy, 10);
   if (body.maxChildrenFree !== undefined && body.maxChildrenFree !== '')
@@ -356,6 +364,11 @@ const duplicateRoom = asyncHandler(async (req, res) => {
         ...data,
         name: original.name,
         slug,
+        // Non-null JSON columns: older rooms (pre-dating these columns) may hold
+        // NULL — coerce to their defaults so the copy passes validation.
+        facilitiesList: Array.isArray(data.facilitiesList) ? data.facilitiesList : [],
+        extraPersonTiers: Array.isArray(data.extraPersonTiers) ? data.extraPersonTiers : [],
+        gstRate: data.gstRate || 0,
         isActive: false,
         isFeatured: false,
       },

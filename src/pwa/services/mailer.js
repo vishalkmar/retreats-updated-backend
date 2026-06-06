@@ -1,10 +1,43 @@
 const http = require('http');
 const https = require('https');
+const nodemailer = require('nodemailer');
 
 const FROM = () =>
+  process.env.MAIL_FROM ||
   process.env.SMTP_FROM ||
   process.env.BREVO_FROM ||
   'Retreats by Traveon <no-reply@traveon.com>';
+
+// Provider-agnostic SMTP transport (nodemailer). Works with ANY provider —
+// Resend, SendGrid, Mailgun, Zoho, Gmail, or your own cPanel mailbox — using
+// plain SMTP credentials. Unlike Brevo's transactional API, SMTP auth is NOT
+// tied to an IP allow-list, so it never breaks on a changing/unknown server IP.
+// Activated automatically the moment SMTP_HOST is present in the environment.
+let _transport = null;
+const getSmtpTransport = () => {
+  if (_transport !== null) return _transport;
+  if (!process.env.SMTP_HOST) { _transport = false; return false; }
+  const host = String(process.env.SMTP_HOST).trim();
+  const port = Number(process.env.SMTP_PORT) || 587;
+  // The server's OWN mail server (localhost / mail.<domain>) often uses a
+  // self-signed cert and accepts local mail without auth — relax cert checks
+  // so cPanel/Exim relays don't throw on the TLS handshake.
+  const isLocalRelay = /^(localhost|127\.0\.0\.1|::1|mail\.)/i.test(host);
+  _transport = nodemailer.createTransport({
+    host,
+    port,
+    secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true' || port === 465,
+    auth: process.env.SMTP_USER
+      // Strip spaces — Gmail shows app passwords as "abcd efgh ijkl mnop" but
+      // the actual secret has no spaces; pasting them verbatim breaks AUTH.
+      ? { user: process.env.SMTP_USER, pass: String(process.env.SMTP_PASS || '').replace(/\s+/g, '') }
+      : undefined,
+    ...(isLocalRelay ? { tls: { rejectUnauthorized: false } } : {}),
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+  });
+  return _transport;
+};
 
 const parseAddress = (value) => {
   const address = String(value || '').trim().replace(/^"|"$/g, '');
@@ -90,13 +123,31 @@ const downloadUrl = (url) =>
   });
 
 const send = async ({ to, subject, html, text, replyTo, attachments }) => {
-  if (!process.env.BREVO_API_KEY) {
-    throw new Error('Brevo not configured. Set BREVO_API_KEY in .env');
-  }
-
   const recipients = parseRecipients(to || process.env.SMTP_TO || process.env.SMTP_To);
   if (!recipients.length) {
     throw new Error('Email recipient missing. Pass `to` or set SMTP_TO in .env');
+  }
+
+  // 1) Preferred: SMTP (any provider, no IP allow-list). Used when SMTP_HOST set.
+  const transport = getSmtpTransport();
+  if (transport) {
+    return transport.sendMail({
+      from: FROM(),
+      to: recipients.map((r) => r.email).join(', '),
+      replyTo: replyTo || undefined,
+      subject,
+      html,
+      text,
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        content: Buffer.from(a.content),
+      })),
+    });
+  }
+
+  // 2) Fallback: Brevo transactional HTTP API (legacy — subject to IP allow-list).
+  if (!process.env.BREVO_API_KEY) {
+    throw new Error('No email transport configured. Set SMTP_HOST (+ SMTP_USER/SMTP_PASS) or BREVO_API_KEY in .env');
   }
 
   return postBrevoEmail({

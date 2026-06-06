@@ -55,6 +55,8 @@ const Booking = sequelize.define(
     currency: { type: DataTypes.STRING(8), defaultValue: 'INR' },
     unitPricePaise: { type: DataTypes.INTEGER, allowNull: false },
     subtotalPaise: { type: DataTypes.INTEGER, allowNull: false },
+    gstPaise: { type: DataTypes.INTEGER, defaultValue: 0 },
+    tcsPaise: { type: DataTypes.INTEGER, defaultValue: 0 },
     taxPaise: { type: DataTypes.INTEGER, defaultValue: 0 },
     walletDiscountPaise: { type: DataTypes.INTEGER, defaultValue: 0 },
     couponDiscountPaise: { type: DataTypes.INTEGER, defaultValue: 0 },

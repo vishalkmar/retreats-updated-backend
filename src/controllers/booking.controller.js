@@ -39,6 +39,8 @@ const parseExtraPersons = (raw) => {
 const publicBooking = (booking) => {
   if (!booking) return null;
   const j = booking.toJSON ? booking.toJSON() : booking;
+  const gstPaise = j.gstPaise || (j.taxPaise && !j.tcsPaise ? j.taxPaise : 0);
+  const tcsPaise = j.tcsPaise || 0;
   return {
     id: j.id,
     bookingCode: j.bookingCode,
@@ -61,6 +63,8 @@ const publicBooking = (booking) => {
     pricing: {
       unitPrice: fromPaise(j.unitPricePaise),
       subtotal: fromPaise(j.subtotalPaise),
+      gst: fromPaise(gstPaise),
+      tcs: fromPaise(tcsPaise),
       tax: fromPaise(j.taxPaise),
       walletDiscount: fromPaise(j.walletDiscountPaise),
       couponDiscount: fromPaise(j.couponDiscountPaise),
@@ -312,6 +316,8 @@ const create = asyncHandler(async (req, res) => {
     currency: pricing.currency,
     unitPricePaise: pricing.unitPricePaise,
     subtotalPaise: pricing.subtotalPaise,
+    gstPaise: pricing.gstPaise,
+    tcsPaise: pricing.tcsPaise,
     taxPaise: pricing.taxPaise,
     walletDiscountPaise: pricing.walletDiscountPaise,
     couponDiscountPaise: pricing.couponDiscountPaise,

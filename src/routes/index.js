@@ -41,6 +41,7 @@ router.use('/uploads', require('./upload.routes'));
 router.use('/site-info', require('./siteInfo.routes'));
 router.use('/section-themes', require('./sectionTheme.routes'));
 router.use('/personalised-recommendation', require('./personalisedRecommendation.routes'));
+router.use('/contact', require('./contact.routes'));
 
 // PWA — mounted at /api/pwa/* so it stays visibly separate from the
 // website API. See backend/src/pwa/routes/index.js for sub-routes.
